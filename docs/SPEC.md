@@ -1,6 +1,6 @@
 # Resonantia — Project Spec
 
-**Status:** requirements settled, no code written yet.
+**Status:** requirements settled; milestone 1 (scaffold) built.
 **Purpose:** portfolio project demonstrating agentic development with Claude. Live for roughly one year while job hunting, then redeployable from the repo plus a database dump.
 
 Items marked **(default)** were proposed as sensible defaults and not explicitly debated. Items marked **(verify)** rely on third-party facts that must be checked against current provider docs before building on them.
@@ -316,3 +316,6 @@ Start with films only (M2) because it exposes problems with the data model, embe
 | Region | Auto-detect + picker | Correct availability at no extra cost |
 | Evaluation | ~30-query golden set, recall@10 | Repeatable quality signal |
 | Name | Resonantia | Latin root of "resonance" (echo); domain TBD |
+| Migrations | `web` runs `migrate` on every start, then gunicorn | `docker compose up` must yield a working database, and a redeploy migrates with no extra step. Safe with one `web` instance; revisit if that changes |
+| Local DB access | Compose publishes `db` on `127.0.0.1` only | Host tools (pytest, psql) need a route to the database; loopback is not reachable from other machines |
+| Versions | Django 5.2 LTS, Postgres 17 (`pgvector/pgvector:pg17`), Python 3.12, Node 24, TypeScript 6.0.x | LTS support runs past the one-year lifespan; TypeScript stays below 6.1 until `typescript-eslint` supports 7 |
