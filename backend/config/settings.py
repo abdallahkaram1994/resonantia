@@ -20,6 +20,19 @@ def env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ImproperlyConfigured(f"{name} must be an integer") from None
+    if value < minimum:
+        raise ImproperlyConfigured(f"{name} must be at least {minimum}")
+    return value
+
+
 SECRET_KEY = require_env("DJANGO_SECRET_KEY")
 DEBUG = env_bool("DJANGO_DEBUG", False)
 ALLOWED_HOSTS = [
@@ -60,6 +73,13 @@ REST_FRAMEWORK = {
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
     "UNAUTHENTICATED_USER": None,
 }
+
+# Embeddings. Vectors from different models are never compared, so changing the model or the
+# dimension means re-embedding the catalog. Set the rate to your Gemini quota, minus headroom.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "").strip() or "gemini-embedding-2"
+EMBEDDING_DIM = env_int("EMBEDDING_DIM", 768)
+EMBEDDING_REQUESTS_PER_MINUTE = env_int("EMBEDDING_REQUESTS_PER_MINUTE", 30)
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
