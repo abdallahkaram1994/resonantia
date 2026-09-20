@@ -266,7 +266,7 @@ Testing only; nothing here runs in production or adds cost.
 
 Each milestone ends with tests passing, docs updated, and a stop for human review. One small PR per slice.
 
-1. **Scaffold:** Compose stack (Postgres+pgvector, Django, Caddy), CI with lint and tests, `CLAUDE.md`, `.env.example`.
+1. **Scaffold:** Compose stack (`db` with Postgres+pgvector, `web`, `caddy`; the `worker` container arrives in M3), a minimal front-end scaffold (Vite + React + TypeScript + Tailwind with one placeholder page that calls a backend health endpoint; no product UI), CI covering backend and front-end (lint, typecheck, tests, build), `CLAUDE.md`, `.env.example`. *Accept:* `docker compose up` starts the stack; the pgvector extension is enabled; Caddy serves the built front-end at `/` and proxies `/api` to Django; the placeholder page shows the health check result; CI passes.
 2. **Films end to end:** data model with provenance, TMDB adapter, combined-text builder, `Embedder` interface, basic search endpoint, bare-bones page. *Accept:* a real query returns relevant films locally.
 3. **Games and albums:** IGDB adapter; Last.fm, MusicBrainz, Cover Art Archive, Wikipedia/Wikidata; entity resolution; Procrastinate worker container with resumable ingest and embedding tasks. *Accept:* sample ingest of all three types.
 4. **Search behavior:** filters via the registry, hybrid layout, "more like this", Postgres full-text fallback.
