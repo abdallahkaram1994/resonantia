@@ -1,6 +1,6 @@
 # Resonantia — Project Spec
 
-**Status:** requirements settled; milestone 1 (scaffold) built.
+**Status:** requirements settled; milestones 1 (scaffold) and 2 (films end to end) built.
 **Purpose:** portfolio project demonstrating agentic development with Claude. Live for roughly one year while job hunting, then redeployable from the repo plus a database dump.
 
 Items marked **(default)** were proposed as sensible defaults and not explicitly debated. Items marked **(verify)** rely on third-party facts that must be checked against current provider docs before building on them.
@@ -50,19 +50,19 @@ The differentiator is cross-media mood matching in one shared embedding space. I
 
 | Source | Used for | Notes |
 |---|---|---|
-| TMDB | Films: metadata, posters, overview, ratings (`vote_average`, `vote_count`), streaming availability by region | Attribution and non-endorsement notice required. Availability is JustWatch-powered. |
+| TMDB | Films: metadata, posters, overview, ratings (`vote_average`, `vote_count`), streaming availability by region | TMDB logo and non-endorsement notice required. **Non-commercial use only.** Data must not be cached longer than 6 months. Terms section 1.C also restrict use "in connection with... a machine learning or AI based Application"; that risk is accepted (see the decision log). Availability is JustWatch-powered. |
 | IGDB (via Twitch OAuth) | Games: metadata, covers, summary, ratings, store links | Free. Verify exact rating/count field names. |
 | MusicBrainz | Albums: canonical release groups, artists, year, Wikidata links | ~1 request/second. Descriptive User-Agent required. |
 | Last.fm | Album discovery (popular albums per genre tag), tags | Free API key. Popularity, not quality. |
 | Cover Art Archive | Album covers | Linked from MusicBrainz. |
 | Wikipedia (MediaWiki API) + Wikidata | Album summaries | CC BY-SA: show "Source: Wikipedia" link and license note. Descriptive User-Agent required. |
 | OMDb | Display-only Rotten Tomatoes/Metacritic scores | ~1,000 requests/day free: fetch lazily on detail-page view and cache. |
-| Gemini API | LLM parsing/rerank/explain and embeddings | Free tier, no card. **(verify)** current models and limits. |
+| Gemini API | LLM parsing/rerank/explain and embeddings | Free tier, no card. Embeddings are verified (section 6). Free-tier content may be used by Google and read by human reviewers (decision log). **(verify)** LLM models and limits in M5. |
 | Groq or Mistral | Fallback LLM provider | Free tier. **(verify)** |
 
 **Dropped:** OpenCritic (free tier too limited), HowLongToBeat, direct RT/Metacritic, Discogs, Last.fm album wiki as a summary source.
 
-**Images:** store URLs/IDs only and hotlink from source CDNs. Nothing is stored or proxied by us. Attribution for every source goes in the footer.
+**Images:** store URLs/IDs only and hotlink from source CDNs. Nothing is stored or proxied by us. That includes the TMDB logo in the footer. Attribution for every source goes in the footer.
 
 ---
 
@@ -75,23 +75,28 @@ The differentiator is cross-media mood matching in one shared embedding space. I
   - Game: summary and at least one genre or theme
   - Album: tags present (a Wikipedia summary is *not* required)
 - **Album ingestion:** Last.fm top albums across ~50–100 genre tags → resolve to a MusicBrainz release group (Last.fm often returns the MBID) → Cover Art Archive for art → Wikipedia via the Wikidata link on the MusicBrainz record. **Albums that cannot be matched cleanly are dropped; never guess by title search.**
-- Ingest is a config-driven, resumable, throttled background job. `INGEST_LIMIT=N` per type for small sample runs.
+- Ingest is a config-driven, resumable, throttled background job. `INGEST_LIMIT=N` per type for small sample runs. Until the worker arrives in M3 it runs as management commands (`ingest_films`, then `embed_items`) on the developer's machine.
+- **Film selection** (all thresholds in config): "popular" means at least `FILM_MIN_VOTE_COUNT` TMDB votes (default 1,000), most-voted first. The mid-tail slice (`FILM_MID_TAIL_PERCENT`, default 10%) comes from the band starting at `FILM_MID_TAIL_MIN_VOTE_COUNT` (default 200) up to the popular threshold, ordered by popularity. Vote counts only select films; they never affect ranking.
+- **Embedding budget:** one embedding request per item, and the free tier allows about 1,000 requests a day, so embedding ~6,000 items takes about six days of quota, and a model change costs the same again. `embed_items` saves each vector as it arrives and stops cleanly when the quota runs out.
+- **TMDB refresh:** TMDB data must not be cached longer than 6 months. Every TMDB-sourced field carries `fetched_at`, and `ingest_films` warns when catalog data is older than `TMDB_MAX_CACHE_DAYS` (default 150). A restored dump counts, so check its age after a redeploy.
 - **Full ingest runs on the developer's machine.** The finished catalog (embeddings included) is dumped with `pg_dump` and restored on the VPS. Keep a copy of the dump for future redeploys.
 
 ---
 
 ## 6. Data model (conceptual)
 
-- **Item:** canonical record. `media_type`, `title`, `release_year` (nullable int), `cover_url`, `summary`, `combined_text`, `content_hash`, `embedding` (vector), `embedding_model`, `embedding_dim`, timestamps. Type-specific fields in typed columns or JSON.
+- **Item:** canonical record. `media_type`, `title`, `release_year` (nullable int), `cover_url`, `summary`, `combined_text`, `content_hash`, `embedding` (vector), `embedding_model`, `embedding_dim`, timestamps. Type-specific fields live in a `details` JSON column. The database refuses a vector stored without its model and dimension.
 - **ExternalId:** maps an Item to source IDs (`source`, `external_id`). This is the entity-resolution layer.
-- **Provenance:** every sourced field records `source` and `fetched_at`.
-- **Score (display-only):** `item`, `source`, `value`, `vote_count`, `fetched_at`.
+- **Provenance:** every sourced field records `source` and `fetched_at`, kept as a JSON map on the item.
+- **Score (display-only):** `item`, `source`, `value`, `vote_count`, `fetched_at`; unique per item and source (a source with several scores, like OMDb, needs distinct source names).
 - **Availability (films):** `item`, `region`, `service`, `kind`, `fetched_at`. Store all regions from the TMDB response.
 - **Cache tables:** query embeddings, parsed intents, full results, rate-limit counters (Postgres, UNLOGGED or DB-backed).
 
 **Combined text per item:** title + genres/tags + summary (or Wikipedia text when available). One text, one vector. **Ratings are never embedded.**
 
-**Embeddings:** Gemini `gemini-embedding-001` reduced to **768 dimensions** (default; **verify** the current model and free limits). Store the model and dimension per row. Changing the model means re-embedding the catalog. Use `content_hash` to skip unchanged items on re-runs.
+**Embeddings:** Gemini **`gemini-embedding-2`** reduced to **768 dimensions** (verified September 2026). It replaced the earlier default `gemini-embedding-001`, which is legacy with a shutdown announced for May 2028. It normalizes truncated vectors itself and accepts 8,192 input tokens. It has no task-type parameter, so retrieval instructions go in the text: documents are sent as `title: none | text: <combined text>` (the combined text already starts with the title) and queries as `task: search result | query: <text>`. **Each text is its own request**, because a list of texts in one request comes back as a single aggregated vector. Store the model and dimension per row, and only ever compare vectors of the same model and dimension (enforced in SQL). Changing the model means re-embedding the catalog. `content_hash` (sha256 of the combined text) skips unchanged items on re-runs: a changed text clears the stored vector so the item is embedded again.
+
+**Retrieval:** an exact cosine scan with no ANN index. At ~6,000 items it is fast, and it keeps "filters in SQL before ranking" exact (a filtered approximate index can return too few rows). Revisit if the catalog grows. Cosine scores sit in a narrow band (about 0.55 to 0.6 for a query against a film, and 0.73 on average between two films), so use them for ordering only and never show them as a percentage.
 
 ---
 
@@ -99,7 +104,7 @@ The differentiator is cross-media mood matching in one shared embedding space. I
 
 ### 7.1 Pipeline
 
-1. **Normalize** the query: lowercase, trim, collapse whitespace. Hard cap **200 characters**.
+1. **Normalize** the query: lowercase, trim, collapse whitespace. Hard cap **200 characters** (config), checked after normalizing: a longer query is rejected with a 400, never truncated.
 2. **Cache lookup** on the full-result key (normalized query + filters + embedding model + prompt version).
 3. **Parse** with the LLM into `{vibe_text, media_type_hint}`, validated against a strict schema. If parsing fails, use the raw query as `vibe_text` with no hint.
 4. **Embed** `vibe_text` (cached by normalized text).
@@ -169,10 +174,13 @@ Style reference: Letterboxd (poster-grid, clean, dense metadata). Flow: land →
 - **All search requests per IP:** looser.
 - **Global daily circuit breaker:** stop LLM/embedding calls at ~70% of the free quota.
 - **Provider-side per-minute limiter:** never trip the provider's own limits.
+- **Embedding quota (observed free tier, September 2026):** 100 requests/minute, 30K tokens/minute, and **1,000 requests/day**, resetting at midnight Pacific time. Every uncached search spends one request embedding its query, and ingest draws on the same budget. At the 70% breaker that is about 700 searches a day before caching, which is why the query-embedding cache matters.
 - Return `429` with `Retry-After`; the UI explains politely.
 
 ### Other controls
 - Query length cap; LLM output validated against schema; the LLM sees only the query and stored item metadata and has **no tools**.
+- Search failures return one generic 503 (with `Retry-After` when the provider gave a delay). Provider error details are logged, never returned, and **query text is never logged**.
+- Until this milestone (M6) is built, the search endpoint has no rate limits and must not be exposed publicly.
 - Signed session cookie issued on page load and required by the API.
 - Cloudflare Turnstile challenge after a few searches or on suspicious behavior **(verify** current terms; use Cloudflare's dummy keys locally).
 - CORS locked to our origin; ingest/admin endpoints not publicly routable; `robots.txt` disallows the API.
@@ -233,8 +241,8 @@ Style reference: Letterboxd (poster-grid, clean, dense metadata). Flow: land →
 ## 11. Local development
 
 - Same Docker Compose file as production, plus the Vite dev server. Run Claude Code on the host (macOS), not inside a container.
-- `.env` (gitignored) holds keys; `.env.example` is committed with every variable listed and placeholders.
-- Tests use **recorded fixtures**: no keys, no network. CI runs the same way.
+- `.env` (gitignored) holds keys; `.env.example` is committed with every variable listed and placeholders. Keep each variable on one line and defined once: Docker Compose uses the **last** duplicate but `uv run --env-file` uses the **first**. Use letters and digits only in `POSTGRES_PASSWORD`, since the two tools parse `$`, `#`, quotes and backslashes differently. The database keeps the password it was first created with, so after changing it run `docker compose down -v`.
+- Tests use **fixtures**: no keys, no network. CI runs the same way. Third-party content is not committed: TMDB fixtures are invented films in TMDB's response shape, because TMDB's terms limit caching and redistribution and the repository is public. Error bodies may be real recordings when they contain no third-party content.
 - Manual checks use a small sample ingest (`INGEST_LIMIT=50`) before the full run.
 - Only production-only behavior (Cloudflare real-IP, HTTPS, origin firewall) is verified at deploy time, with unit tests using simulated headers beforehand.
 
@@ -242,7 +250,7 @@ Style reference: Letterboxd (poster-grid, clean, dense metadata). Flow: land →
 
 | When | What |
 |---|---|
-| M2 | TMDB API key, Gemini API key |
+| M2 | TMDB **read-access token** (not the short API key), Gemini API key, and your AI Studio embedding limits (RPM, TPM, RPD) |
 | M3 | Twitch app client ID/secret (IGDB), Last.fm API key, contact email for MusicBrainz/Wikipedia User-Agent |
 | Display scores | OMDb API key |
 | M5 | Fallback LLM key (Groq or Mistral) |
@@ -283,8 +291,11 @@ Start with films only (M2) because it exposes problems with the data model, embe
 
 ## 14. To verify before or during the build
 
-- Gemini embedding model name, dimensions, and current free-tier limits; LLM free-tier limits; fallback provider terms
-- IGDB rating and count field names; TMDB attribution wording; OMDb daily quota
+- LLM free-tier limits and fallback provider terms (M5). *Verified in M2:* Gemini embedding model, dimensions and free-tier limits; TMDB attribution wording and image URLs.
+- IGDB rating and count field names; OMDb daily quota
+- **Before M3:** whether the IGDB, Last.fm, MusicBrainz, Wikipedia and OMDb terms allow use in an AI application, as was checked for TMDB
+- **Before M9:** the Gemini free-tier clause that bars services likely accessed by under-18s
+- A real Gemini 429 response body: daily-quota detection follows the standard google.rpc format but has only been tested against synthetic fixtures
 - Turnstile terms; Cloudflare free-plan rule limits; Cloudflare Registrar availability and price for the chosen name
 - RackNerd datacenter options, renewal terms, and taxes at checkout
 - Claude Code usage limits on the current plan
@@ -319,3 +330,11 @@ Start with films only (M2) because it exposes problems with the data model, embe
 | Migrations | `web` runs `migrate` on every start, then gunicorn | `docker compose up` must yield a working database, and a redeploy migrates with no extra step. Safe with one `web` instance; revisit if that changes |
 | Local DB access | Compose publishes `db` on `127.0.0.1` only | Host tools (pytest, psql) need a route to the database; loopback is not reachable from other machines |
 | Versions | Django 5.2 LTS, Postgres 17 (`pgvector/pgvector:pg17`), Python 3.12, Node 24, TypeScript 6.0.x | LTS support runs past the one-year lifespan; TypeScript stays below 6.1 until `typescript-eslint` supports 7 |
+| Embedding model | `gemini-embedding-2`, 768 dims, one text per request | The current recommended model (001 is legacy, shutdown May 2028); it normalizes truncated vectors; a list of texts in one request is aggregated into a single vector |
+| TMDB and AI use | Accepted the risk of using TMDB data in an ML/AI application, for non-commercial use only | TMDB's terms (section 1.C) restrict this and TMDB has not answered community questions about non-commercial use. The key could be revoked. Keep the logo, the notice and the refresh rule, and re-evaluate if TMDB objects |
+| TMDB data age | Refresh within 6 months; `ingest_films` warns after 150 days | TMDB's terms prohibit caching longer than 6 months; a restored dump counts |
+| Free-tier data use | Accept Gemini's free-tier terms, with a visible notice on the search page | The only zero-cost option. Google may use and human-review submitted text, so visitors are told not to enter personal information. Open risk: the terms also bar services likely accessed by under-18s; revisit before deploy |
+| Retrieval | Exact cosine scan, no ANN index | ~6,000 items scan fast, and a filtered approximate index can return too few rows; revisit if the catalog grows |
+| Query length | Over 200 characters is rejected with a 400, not truncated | Truncating would change the query's meaning |
+| Test fixtures | Invented third-party records in the provider's response shape | TMDB's terms limit caching and redistribution, and the repository is public |
+| Embedding budget | Resumable, quota-aware embedding; about 1,000 texts a day | The free tier allows 1,000 requests a day, so the full catalog takes about six days |

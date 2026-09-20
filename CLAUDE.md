@@ -17,6 +17,7 @@ Resonantia is a vibe-first search across **games, films, and albums**. A visitor
 
 - **Total budget is ≤ $60/year.** No paid services, no usage-billed services, no Redis, no managed databases. Never suggest attaching billing to an AI provider key.
 - **Official, free APIs only.** No scraping, no unofficial APIs (HowLongToBeat, direct Rotten Tomatoes/Metacritic).
+- **Respect source terms.** TMDB data is non-commercial only, needs the TMDB logo and non-endorsement notice, and must not be cached longer than 6 months. Do not commit real third-party content: fixtures use invented records in the provider's response shape. Check a new source's terms for AI use before building on it.
 - **No ML model on our server.** Embeddings and LLM calls go through hosted free-tier APIs behind provider interfaces.
 - **Anonymous v1.** No accounts, no personal data stored or sent to any AI provider.
 - **Ranking is vibe similarity only, for every media type.** Ratings are display-only and are never embedded. A per-type quality weight exists in config, default `0`.
@@ -47,11 +48,16 @@ Resonantia is a vibe-first search across **games, films, and albums**. A visitor
 
 Keep this section current. Run from the repo root unless a `cd` is shown. Prerequisites: Docker with Compose, `uv`, Node 24.
 
-**Setup (once):** `cp .env.example .env`, then set `DJANGO_SECRET_KEY` and `POSTGRES_PASSWORD`. Compose refuses to start and names any required variable that is missing.
+**Setup (once):** `cp .env.example .env`, then set `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`, `GEMINI_API_KEY` and `TMDB_READ_ACCESS_TOKEN`. Compose refuses to start and names any required variable that is missing. Define each variable once (Compose uses the last duplicate, `uv run --env-file` the first) and use letters and digits only in `POSTGRES_PASSWORD`. The database keeps its first password, so after changing it run `docker compose down -v`.
 
 **Start the stack:** `docker compose up --build`, then open http://localhost:8080 (Caddy serves the built frontend and proxies `/api` to Django). Stop with `docker compose down`; add `-v` to also delete the database volume.
 
 **Migrations:** `web` runs `manage.py migrate` on every start, so `docker compose up` applies them. Manually: `docker compose run --rm web python manage.py migrate`.
+
+**Load films** (host, against the loopback database; `docker compose up -d db` first; both are resumable):
+- `cd backend && uv run --env-file ../.env python manage.py ingest_films --limit 50` fetches films from TMDB (`--limit`, else `INGEST_LIMIT`, else `CATALOG_TARGET_PER_TYPE`) and warns when catalog data nears TMDB's 6-month limit.
+- `uv run --env-file ../.env python manage.py embed_items [--limit N]` embeds pending items with Gemini. The free tier allows about 1,000 requests a day, so it stops cleanly when the quota runs out; run it again the next day.
+- Search: `curl 'http://localhost:8080/api/search/?q=a%20rainy%20night%20drive'` (spends one embedding request).
 
 **Backend tests** (needs the database: `docker compose up -d db`):
 `cd backend && uv run --env-file ../.env pytest`
@@ -65,12 +71,12 @@ Keep this section current. Run from the repo root unless a `cd` is shown. Prereq
 **CI** (`.github/workflows/ci.yml`) runs the backend checks, the frontend checks, and a stack smoke test (build, start, `/api/health/` and `/` through Caddy).
 
 **Not implemented yet:**
-- Sample ingest (`INGEST_LIMIT=50`): arrives with films in M2 and the worker in M3.
-- Evaluation harness: arrives in M7.
+- Ingest for games and albums, and running ingest on the worker: M3.
+- Evaluation harness: M7.
 
 ## Testing rules
 
-- **Tests never call live APIs.** Use recorded fixtures so tests need no keys and no network.
+- **Tests never call live APIs.** Use fixtures (recorded, or invented in the provider's shape when the content is third-party) so tests need no keys and no network.
 - Cover the behaviors that are easy to get wrong: filter isolation across media types, null-year handling, layout rules, per-type score normalization, fallback paths under forced failures, rate limits, cache-key versioning, and prompt-injection queries.
 - New behavior needs a test. Bug fixes need a regression test.
 - The golden-set evaluation runs against cached embeddings and must not spend quota in CI.
@@ -80,6 +86,7 @@ Keep this section current. Run from the repo root unless a `cd` is shown. Prereq
 - **Never read, print, or commit `.env` or any secret.** Read configuration from environment variables only. `.env` stays gitignored; maintain `.env.example` with placeholders.
 - The LLM receives only the user's query and stored item metadata, has **no tools**, and its output is validated against a strict schema before use.
 - Treat all query text and all third-party API text as untrusted input.
+- Never log search query text, and never return provider error details to visitors (log them; return a generic message).
 - Read the client IP from `CF-Connecting-IP` **only** when the request comes from Cloudflare's published ranges.
 - Admin and ingest endpoints are never publicly routable.
 - Never store or proxy source images; hotlink from the source CDN and show attribution.
