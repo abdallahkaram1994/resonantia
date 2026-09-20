@@ -38,7 +38,7 @@ The differentiator is cross-media mood matching in one shared embedding space. I
 
 - **Backend:** Python 3.12+, Django, Django REST Framework (default), `uv`, `ruff`, `pytest`
 - **Database:** Postgres with `pgvector`
-- **Background jobs:** Postgres-backed queue, e.g. Procrastinate (default; no Redis)
+- **Background jobs:** **Procrastinate**, a Postgres-backed task queue (see section 9b). Not Celery, no Redis.
 - **Frontend:** React, Vite, TypeScript, Tailwind (default), built to static files served by Caddy
 - **Runtime:** Docker Compose (`db`, `web` under gunicorn, `worker`, `caddy`)
 - **CI/CD:** GitHub Actions, GitHub Container Registry, SSH deploy
@@ -190,6 +190,34 @@ Style reference: Letterboxd (poster-grid, clean, dense metadata). Flow: land →
 
 ---
 
+## 9b. Background worker
+
+**Choice: Procrastinate**, a Postgres-backed task queue with a Django integration, retries, periodic tasks, and task locks. It runs as the `worker` container, built from the same image as `web` with a different command, and needs only the Postgres we already run.
+
+**Why not Celery:** Celery needs a separate broker (usually Redis or RabbitMQ), which adds a service and RAM on a 2 GB server. Also considered: django-q2, and Django's newer built-in tasks API with a database backend. Procrastinate was picked because retries, cron-style periodic tasks, and locks come built in with no extra infrastructure. Keep task code behind thin wrappers so swapping later is feasible. **(verify)** the current version and Django integration docs; the project has said it is looking for more maintainers.
+
+### What runs on the worker
+
+| Task | Trigger | Notes |
+|---|---|---|
+| Source ingest (per source and media type) | Manual / management command | Resumable and throttled. The full ingest normally runs on the developer's machine; the VPS worker only does small top-ups. |
+| Embedding batch | After ingest, or when `content_hash` changes | Respects the daily embedding quota and continues the next day if exhausted. |
+| Refresh streaming availability | Periodic (TTL of days) | TMDB watch providers. |
+| Refresh scores | Periodic (TTL of weeks) | TMDB and IGDB. OMDb stays lazy, not bulk. |
+| Cache and counter pruning | Periodic (hourly or daily) | Expired result, embedding, and intent cache rows; rate-limit counters. |
+| Pre-warm example queries | Periodic (daily) and after deploy | Uses the circuit-breaker budget; skipped when budget is low. |
+
+**Not queued:** the search request path stays synchronous. The OMDb lookup on a detail page runs in-request with a short timeout and is cached; if it fails, the page renders without those scores.
+
+### Rules
+- Tasks are idempotent and retry with backoff. A failing task never affects search serving.
+- Separate queues (e.g. `ingest`, `maintenance`). MusicBrainz work uses a lock or single-concurrency queue to honor ~1 request/second.
+- Low worker concurrency to stay inside the RAM budget.
+- Job status and manual triggers go through management commands. No public admin endpoints.
+- Tasks that call Gemini share the same global circuit breaker as search (section 9).
+
+---
+
 ## 10. Deployment
 
 - **Host:** RackNerd 2 GB KVM VPS, $35.99/year (2 vCPU, 35 GB SSD, 1 IPv4). Confirm datacenter location and terms at checkout. Not needed beyond one year; redeploy from repo + dump.
@@ -240,10 +268,10 @@ Each milestone ends with tests passing, docs updated, and a stop for human revie
 
 1. **Scaffold:** Compose stack (Postgres+pgvector, Django, Caddy), CI with lint and tests, `CLAUDE.md`, `.env.example`.
 2. **Films end to end:** data model with provenance, TMDB adapter, combined-text builder, `Embedder` interface, basic search endpoint, bare-bones page. *Accept:* a real query returns relevant films locally.
-3. **Games and albums:** IGDB adapter; Last.fm, MusicBrainz, Cover Art Archive, Wikipedia/Wikidata; entity resolution; resumable ingest. *Accept:* sample ingest of all three types.
+3. **Games and albums:** IGDB adapter; Last.fm, MusicBrainz, Cover Art Archive, Wikipedia/Wikidata; entity resolution; Procrastinate worker container with resumable ingest and embedding tasks. *Accept:* sample ingest of all three types.
 4. **Search behavior:** filters via the registry, hybrid layout, "more like this", Postgres full-text fallback.
 5. **LLM layer:** provider interface (Gemini + fallback), parse and rerank/explain, schema validation, forced-failure fallbacks.
-6. **Protection:** rate limits, caches, circuit breaker, session cookie, Turnstile, Cloudflare header handling.
+6. **Protection:** rate limits, caches, circuit breaker, session cookie, Turnstile, Cloudflare header handling; periodic worker tasks (cache and counter pruning, availability/score refresh, pre-warming).
 7. **Evaluation:** golden-set harness and CI regression check.
 8. **Frontend polish:** landing, poster grid, detail page, region picker, attribution footer.
 9. **Deploy:** VPS, Cloudflare, origin lockdown, auto-deploy, backups, restore from dump.
@@ -260,6 +288,7 @@ Start with films only (M2) because it exposes problems with the data model, embe
 - Turnstile terms; Cloudflare free-plan rule limits; Cloudflare Registrar availability and price for the chosen name
 - RackNerd datacenter options, renewal terms, and taxes at checkout
 - Claude Code usage limits on the current plan
+- Procrastinate's current version, Django integration docs, and periodic-task setup
 - Name availability (domain, GitHub, trademark)
 
 ---
@@ -282,6 +311,7 @@ Start with films only (M2) because it exposes problems with the data model, embe
 | Fallback | Postgres full-text search | Works without any external call |
 | Accounts | None in v1 | Smaller scope; no personal data |
 | Hosting | Single RackNerd 2 GB VPS + Docker Compose | Cheapest way to get workers and one bill |
+| Task queue | Procrastinate (Postgres-backed), not Celery | Celery needs a broker (extra service and RAM); Procrastinate needs only Postgres |
 | Edge | Cloudflare domain + proxy + Turnstile | Bot control and hidden origin |
 | Region | Auto-detect + picker | Correct availability at no extra cost |
 | Evaluation | ~30-query golden set, recall@10 | Repeatable quality signal |

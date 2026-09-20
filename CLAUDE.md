@@ -24,7 +24,9 @@ Resonantia is a vibe-first search across **games, films, and albums**. A visitor
 
 ## Architecture in brief
 
-- **Backend:** Python 3.12+, Django + DRF, Postgres with `pgvector`, Postgres-backed task queue (no Redis).
+- **Backend:** Python 3.12+, Django + DRF, Postgres with `pgvector`.
+- **Background jobs:** **Procrastinate** (Postgres-backed). Do not use Celery or add Redis or any other broker. The `worker` container runs from the same image as `web`. See SPEC section 9b for the task list.
+- **Worker rules:** tasks are idempotent and retry with backoff; use separate queues (`ingest`, `maintenance`); MusicBrainz work must honor ~1 request/second; tasks that call Gemini share the global circuit breaker; the search request path stays synchronous.
 - **Frontend:** React + Vite + TypeScript + Tailwind, built to static files.
 - **Runtime:** Docker Compose with `db`, `web`, `worker`, `caddy`. Cloudflare in front in production.
 - **Provider adapters:** each data source implements a common interface so a source can be dropped or swapped. The LLM and the embedder are also interfaces (`parse_query`, `rerank_and_explain`, `embed`).
