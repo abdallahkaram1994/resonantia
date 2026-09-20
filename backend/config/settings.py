@@ -20,7 +20,7 @@ def env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def env_int(name: str, default: int, minimum: int = 1) -> int:
+def env_int(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
@@ -30,6 +30,8 @@ def env_int(name: str, default: int, minimum: int = 1) -> int:
         raise ImproperlyConfigured(f"{name} must be an integer") from None
     if value < minimum:
         raise ImproperlyConfigured(f"{name} must be at least {minimum}")
+    if maximum is not None and value > maximum:
+        raise ImproperlyConfigured(f"{name} must be at most {maximum}")
     return value
 
 
@@ -79,7 +81,23 @@ REST_FRAMEWORK = {
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "").strip() or "gemini-embedding-2"
 EMBEDDING_DIM = env_int("EMBEDDING_DIM", 768)
-EMBEDDING_REQUESTS_PER_MINUTE = env_int("EMBEDDING_REQUESTS_PER_MINUTE", 30)
+EMBEDDING_REQUESTS_PER_MINUTE = env_int("EMBEDDING_REQUESTS_PER_MINUTE", 60)
+
+# Film catalog (TMDB). Non-commercial use only; TMDB data must be refreshed within 6 months.
+TMDB_READ_ACCESS_TOKEN = os.environ.get("TMDB_READ_ACCESS_TOKEN", "").strip()
+TMDB_REQUESTS_PER_SECOND = env_int("TMDB_REQUESTS_PER_SECOND", 20)
+TMDB_IMAGE_BASE_URL = (
+    os.environ.get("TMDB_IMAGE_BASE_URL", "").strip() or "https://image.tmdb.org/t/p/w342"
+)
+TMDB_MAX_CACHE_DAYS = env_int("TMDB_MAX_CACHE_DAYS", 150)
+# Films need at least this many TMDB votes to count as popular; a band just below it feeds the
+# mid-tail slice so results can surprise. Vote counts pick films; they never affect ranking.
+FILM_MIN_VOTE_COUNT = env_int("FILM_MIN_VOTE_COUNT", 1000)
+FILM_MID_TAIL_MIN_VOTE_COUNT = env_int("FILM_MID_TAIL_MIN_VOTE_COUNT", 200)
+FILM_MID_TAIL_PERCENT = env_int("FILM_MID_TAIL_PERCENT", 10, minimum=0, maximum=100)
+CATALOG_TARGET_PER_TYPE = env_int("CATALOG_TARGET_PER_TYPE", 2000)
+# Cap for sample runs (for example 50). 0 means use CATALOG_TARGET_PER_TYPE.
+INGEST_LIMIT = env_int("INGEST_LIMIT", 0, minimum=0)
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
