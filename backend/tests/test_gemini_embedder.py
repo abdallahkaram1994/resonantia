@@ -1,6 +1,9 @@
-"""Gemini adapter tests. Fixtures under tests/fixtures/gemini follow Google's API reference
-(embedContent response, `{"error": {"code", "message"}}` bodies); replace them with recordings
-from the live API when a key is available."""
+"""Gemini adapter tests. Fixtures under tests/fixtures/gemini:
+- error_invalid_key.json is a real recording (a request sent with a placeholder key).
+- error_429_*.json are synthetic, following the standard google.rpc error format
+  (QuotaFailure and RetryInfo details); no live 429 has been recorded yet.
+- embed_ok.json, error_quota_exceeded.json and error_rate_limit.json follow the API reference's
+  documented shapes, which the adapter also accepts."""
 
 import json
 
@@ -11,7 +14,7 @@ from catalog.embedding.base import (
     EmbeddingRequestError,
     EmbeddingUnavailable,
 )
-from catalog.embedding.gemini import GeminiEmbedder, format_text
+from catalog.embedding.gemini import GeminiEmbedder, _is_daily_quota, _retry_delay, format_text
 from catalog.http import HttpResponse, NetworkError, RetryPolicy
 from tests.helpers import CountingThrottle, FakeClock, FakeTransport, fixture_bytes, json_response
 
@@ -240,6 +243,132 @@ def test_model_names_that_could_alter_the_url_are_rejected(model: str) -> None:
         make_embedder(model=model)
 
 
+def test_a_real_format_daily_quota_is_not_retried_and_says_so() -> None:
+    embedder, transport, clock = make_embedder(
+        json_response(429, "gemini/error_429_daily_quota.json"), ok()
+    )
+
+    with pytest.raises(EmbeddingRateLimited) as excinfo:
+        embedder.embed(["a"], "document")
+
+    assert excinfo.value.quota_exhausted is True
+    assert excinfo.value.retry_after == 3600
+    assert len(transport.calls) == 1
+    assert clock.sleeps == []
+
+
+def test_a_real_format_per_minute_limit_waits_the_delay_google_gives() -> None:
+    embedder, transport, clock = make_embedder(
+        json_response(429, "gemini/error_429_per_minute.json"), ok()
+    )
+
+    assert embedder.embed(["a"], "document") == [[0.1, 0.2, 0.3, 0.4]]
+
+    assert len(transport.calls) == 2
+    assert clock.sleeps == [12.0]
+
+
+def test_a_real_format_delay_longer_than_the_cap_fails_fast_and_is_reported() -> None:
+    body = json.loads(fixture_bytes("gemini/error_429_per_minute.json"))
+    body["error"]["details"][1]["retryDelay"] = "120s"
+    embedder, transport, clock = make_embedder(HttpResponse(429, {}, json.dumps(body).encode()))
+
+    with pytest.raises(EmbeddingRateLimited) as excinfo:
+        embedder.embed(["a"], "document")
+
+    assert excinfo.value.quota_exhausted is False
+    assert excinfo.value.retry_after == 120
+    assert len(transport.calls) == 1
+    assert clock.sleeps == []
+
+
+def test_the_retry_after_header_wins_over_the_delay_in_the_body() -> None:
+    limited = json_response(429, "gemini/error_429_per_minute.json", {"Retry-After": "5"})
+    embedder, _, clock = make_embedder(limited, ok())
+
+    embedder.embed(["a"], "document")
+
+    assert clock.sleeps == [5.0]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"code": 429, "status": "RESOURCE_EXHAUSTED", "details": "nope"},
+        {"code": 429, "details": [None, 3, {"@type": None}, {"@type": "x/QuotaFailure"}]},
+        {"code": 429, "details": [{"@type": "x/QuotaFailure", "violations": "nope"}]},
+        {"code": 429, "details": [{"@type": "x/QuotaFailure", "violations": [None, 1, {}]}]},
+        {"code": 429, "details": [{"@type": "x/RetryInfo", "retryDelay": {"seconds": 5}}]},
+        {"code": 429, "details": [{"@type": "x/RetryInfo", "retryDelay": "soonS"}]},
+        "not an object",
+    ],
+)
+def test_malformed_error_details_are_treated_as_a_plain_rate_limit(error: object) -> None:
+    body = json.dumps({"error": error}).encode()
+    limited = HttpResponse(429, {}, body)
+    embedder, transport, _ = make_embedder(*[limited] * 4, retry=RetryPolicy(max_retries=3))
+
+    with pytest.raises(EmbeddingRateLimited) as excinfo:
+        embedder.embed(["a"], "document")
+
+    assert excinfo.value.quota_exhausted is False
+    assert excinfo.value.retry_after is None
+    assert len(transport.calls) == 4
+
+
+@pytest.mark.parametrize(
+    ("quota_id", "expected"),
+    [
+        ("EmbedContentRequestsPerDayPerProjectPerModel-FreeTier", True),
+        ("embed_content_requests_per_day", True),
+        ("DailyRequestLimit", True),
+        ("EmbedContentRequestsPerMinutePerProjectPerModel-FreeTier", False),
+        ("EmbedContentInputTokensPerMinutePerProjectPerModel", False),
+        ("", False),
+    ],
+)
+def test_daily_quota_detection_reads_the_quota_id(quota_id: str, expected: bool) -> None:
+    body = {
+        "error": {
+            "code": 429,
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                    "violations": [{"quotaId": quota_id}],
+                }
+            ],
+        }
+    }
+
+    assert _is_daily_quota(HttpResponse(429, {}, json.dumps(body).encode())) is expected
+
+
+def test_the_documented_string_code_still_means_daily_quota() -> None:
+    assert _is_daily_quota(json_response(429, "gemini/error_quota_exceeded.json")) is True
+    assert _is_daily_quota(json_response(429, "gemini/error_rate_limit.json")) is False
+
+
+def test_retry_delay_parsing() -> None:
+    def body(delay: str) -> HttpResponse:
+        details = [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay}]
+        return HttpResponse(429, {}, json.dumps({"error": {"details": details}}).encode())
+
+    assert _retry_delay(body("34s")) == 34.0
+    assert _retry_delay(body("34.5s")) == 34.5
+    assert _retry_delay(body("0s")) == 0.0
+    assert _retry_delay(body("-1s")) is None
+    assert _retry_delay(body("34")) is None
+    assert _retry_delay(HttpResponse(429, {}, b"not json")) is None
+
+
 def test_fixture_files_are_valid_json() -> None:
-    for name in ["embed_ok", "error_quota_exceeded", "error_rate_limit", "error_invalid_key"]:
+    names = [
+        "embed_ok",
+        "error_quota_exceeded",
+        "error_rate_limit",
+        "error_invalid_key",
+        "error_429_daily_quota",
+        "error_429_per_minute",
+    ]
+    for name in names:
         json.loads(fixture_bytes(f"gemini/{name}.json"))

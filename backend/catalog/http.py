@@ -90,14 +90,16 @@ def request_json(
     timeout: float = 30.0,
     retry: RetryPolicy | None = None,
     is_retryable: Callable[[HttpResponse], bool] | None = None,
+    retry_after_of: Callable[[HttpResponse], float | None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Any:
     """Send a JSON request, retrying transient failures, and return the parsed JSON body.
 
-    Retries 429 and 5xx (and network errors) with exponential backoff. A server-provided
-    Retry-After longer than `retry.max_delay` is not waited out: the error is raised at once so the
-    caller can stop (for example, a daily quota) instead of blocking. A 2xx body that is not valid
-    JSON raises ValueError.
+    Retries 429 and 5xx (and network errors) with exponential backoff. A server-provided delay
+    (the Retry-After header, or whatever `retry_after_of` extracts, such as a delay in the body)
+    longer than `retry.max_delay` is not waited out: the error is raised at once so the caller can
+    stop (for example, a daily quota) instead of blocking. A 2xx body that is not valid JSON raises
+    ValueError.
     """
     retry = retry or RetryPolicy()
     request_headers = {"Accept": "application/json", **(headers or {})}
@@ -127,7 +129,7 @@ def request_json(
         error = HttpError(response)
         if last_attempt or not retryable(response):
             raise error
-        wait = error.retry_after
+        wait = retry_after_of(response) if retry_after_of else error.retry_after
         if wait is not None and wait > retry.max_delay:
             raise error
         sleep(wait if wait is not None else min(retry.base_delay * 2**attempt, retry.max_delay))

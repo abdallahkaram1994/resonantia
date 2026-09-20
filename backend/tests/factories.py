@@ -51,6 +51,20 @@ class FakeFilmSource:
             yield record
 
 
+class StaticEmbedder:
+    """Returns one fixed vector for every text, and records what it was asked to embed."""
+
+    def __init__(self, vector: list[float], model: str = "test-model") -> None:
+        self.model = model
+        self.dimensions = EMBEDDING_DIMENSIONS
+        self._vector = vector
+        self.calls: list[tuple[list[str], EmbedKind]] = []
+
+    def embed(self, texts, kind):
+        self.calls.append((list(texts), kind))
+        return [list(self._vector) for _ in texts]
+
+
 class FakeEmbedder:
     """Deterministic vectors. Raises `error` when asked for the `fail_on`-th text (1-based)."""
 
