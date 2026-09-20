@@ -1,0 +1,9 @@
+{
+  "page": 2,
+  "results": [
+    {"id": 1004, "title": "Salt Flats", "vote_count": 2300},
+    {"id": 1001, "title": "Neon Rain Drive", "vote_count": 4200}
+  ],
+  "total_pages": 2,
+  "total_results": 4
+}

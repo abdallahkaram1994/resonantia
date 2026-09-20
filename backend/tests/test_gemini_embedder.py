@@ -13,20 +13,10 @@ from catalog.embedding.base import (
 )
 from catalog.embedding.gemini import GeminiEmbedder, format_text
 from catalog.http import HttpResponse, NetworkError, RetryPolicy
-from catalog.ratelimit import Throttle
-from tests.helpers import FakeClock, FakeTransport, fixture_bytes, json_response
+from tests.helpers import CountingThrottle, FakeClock, FakeTransport, fixture_bytes, json_response
 
 API_KEY = "test-key-not-real"
 DIMS = 4
-
-
-class CountingThrottle(Throttle):
-    def __init__(self) -> None:
-        super().__init__(0)
-        self.waits = 0
-
-    def wait(self) -> None:
-        self.waits += 1
 
 
 def make_embedder(*outcomes: HttpResponse | Exception, **overrides: object):

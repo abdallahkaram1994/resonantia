@@ -1,0 +1,10 @@
+{
+  "page": 1,
+  "results": [
+    {"id": 1001, "title": "Neon Rain Drive", "vote_count": 4200},
+    {"id": 1002, "title": "Quiet Harbor", "vote_count": 1500},
+    {"id": 1003, "title": "Empty Frames", "vote_count": 1100}
+  ],
+  "total_pages": 2,
+  "total_results": 4
+}

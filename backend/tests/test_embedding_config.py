@@ -1,8 +1,3 @@
-import os
-import subprocess
-import sys
-from pathlib import Path
-
 import pytest
 from django.core.checks import run_checks
 from django.core.exceptions import ImproperlyConfigured
@@ -10,27 +5,7 @@ from django.test import override_settings
 
 from catalog.embedding.factory import get_embedder
 from catalog.embedding.gemini import GeminiEmbedder
-
-BACKEND_DIR = Path(__file__).resolve().parent.parent
-BASE_ENV = {
-    "DJANGO_SECRET_KEY": "test-secret",
-    "POSTGRES_DB": "db",
-    "POSTGRES_USER": "user",
-    "POSTGRES_PASSWORD": "password",
-}
-
-
-def load_settings_value(name: str, extra_env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    env = {"PATH": os.environ["PATH"], "DJANGO_SETTINGS_MODULE": "config.settings"}
-    env.update(BASE_ENV)
-    env.update(extra_env)
-    return subprocess.run(
-        [sys.executable, "-c", f"from django.conf import settings; print(settings.{name})"],
-        cwd=BACKEND_DIR,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+from tests.helpers import load_settings_value
 
 
 def test_defaults_match_the_column_width_and_pass_system_checks() -> None:

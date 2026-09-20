@@ -1,0 +1,74 @@
+import pytest
+from django.core.checks import run_checks
+from django.core.exceptions import ImproperlyConfigured
+from django.test import override_settings
+
+from catalog.sources.factory import get_film_source
+from catalog.sources.tmdb import TmdbFilmSource
+from tests.helpers import load_settings_value
+
+
+def check_ids() -> list[str]:
+    return [error.id for error in run_checks()]
+
+
+def test_default_vote_thresholds_pass_the_system_checks() -> None:
+    assert "catalog.E002" not in check_ids()
+
+
+@pytest.mark.parametrize(("mid_tail", "popular"), [(1000, 1000), (1500, 1000)])
+def test_mid_tail_band_must_sit_below_the_popularity_threshold(mid_tail: int, popular: int) -> None:
+    with override_settings(FILM_MID_TAIL_MIN_VOTE_COUNT=mid_tail, FILM_MIN_VOTE_COUNT=popular):
+        assert "catalog.E002" in check_ids()
+
+
+@override_settings(TMDB_READ_ACCESS_TOKEN="")
+def test_film_source_needs_a_token() -> None:
+    with pytest.raises(ImproperlyConfigured, match="TMDB_READ_ACCESS_TOKEN"):
+        get_film_source()
+
+
+@override_settings(TMDB_READ_ACCESS_TOKEN="token")
+def test_film_source_is_built_from_settings() -> None:
+    assert isinstance(get_film_source(), TmdbFilmSource)
+
+
+def test_film_settings_have_sensible_defaults() -> None:
+    expected = {
+        "TMDB_REQUESTS_PER_SECOND": "20",
+        "TMDB_MAX_CACHE_DAYS": "150",
+        "FILM_MIN_VOTE_COUNT": "1000",
+        "FILM_MID_TAIL_MIN_VOTE_COUNT": "200",
+        "FILM_MID_TAIL_PERCENT": "10",
+        "CATALOG_TARGET_PER_TYPE": "2000",
+        "INGEST_LIMIT": "0",
+        "TMDB_IMAGE_BASE_URL": "https://image.tmdb.org/t/p/w342",
+    }
+    for name, value in expected.items():
+        result = load_settings_value(name, {})
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == value, name
+
+
+@pytest.mark.parametrize(
+    ("name", "bad"),
+    [
+        ("FILM_MID_TAIL_PERCENT", "101"),
+        ("FILM_MID_TAIL_PERCENT", "-1"),
+        ("TMDB_REQUESTS_PER_SECOND", "0"),
+        ("CATALOG_TARGET_PER_TYPE", "lots"),
+        ("INGEST_LIMIT", "-5"),
+    ],
+)
+def test_settings_reject_out_of_range_values(name: str, bad: str) -> None:
+    result = load_settings_value(name, {name: bad})
+
+    assert result.returncode != 0
+    assert name in result.stderr
+
+
+def test_zero_is_allowed_for_the_ingest_limit_and_mid_tail_percent() -> None:
+    for name in ("INGEST_LIMIT", "FILM_MID_TAIL_PERCENT"):
+        result = load_settings_value(name, {name: "0"})
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "0"
