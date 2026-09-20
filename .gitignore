@@ -1,0 +1,35 @@
+# Secrets: only the placeholder file is committed
+.env
+.env.*
+!.env.example
+
+# Python / Django / uv
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+staticfiles/
+
+# Frontend (Vite / npm). package-lock.json is committed.
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+coverage/
+
+# Database dumps and backups (the catalog dump is kept off-repo, SPEC sections 5 and 10)
+*.dump
+*.sql
+*.sql.gz
+backups/
+
+# Local Docker overrides
+compose.override.yaml
+
+# OS / editor / Claude Code local state
+.DS_Store
+.idea/
+.vscode/
+.claude/settings.local.json
