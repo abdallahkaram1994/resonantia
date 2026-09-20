@@ -1,0 +1,14 @@
+# Development Caddyfile: plain HTTP. Production TLS and Cloudflare handling arrive in M9.
+:80 {
+	encode gzip zstd
+
+	handle /api/* {
+		reverse_proxy web:8000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
