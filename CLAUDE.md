@@ -45,7 +45,28 @@ Resonantia is a vibe-first search across **games, films, and albums**. A visitor
 
 ## Commands
 
-Filled in during milestone 1. Keep this section current. It should cover: start the stack, run backend tests, run frontend tests, lint, run migrations, run a sample ingest (`INGEST_LIMIT=50`), and run the evaluation harness.
+Keep this section current. Run from the repo root unless a `cd` is shown. Prerequisites: Docker with Compose, `uv`, Node 24.
+
+**Setup (once):** `cp .env.example .env`, then set `DJANGO_SECRET_KEY` and `POSTGRES_PASSWORD`. Compose refuses to start and names any required variable that is missing.
+
+**Start the stack:** `docker compose up --build`, then open http://localhost:8080 (Caddy serves the built frontend and proxies `/api` to Django). Stop with `docker compose down`; add `-v` to also delete the database volume.
+
+**Migrations:** `web` runs `manage.py migrate` on every start, so `docker compose up` applies them. Manually: `docker compose run --rm web python manage.py migrate`.
+
+**Backend tests** (needs the database: `docker compose up -d db`):
+`cd backend && uv run --env-file ../.env pytest`
+
+**Backend lint:** `cd backend && uv run ruff check . && uv run ruff format --check .` (fix formatting with `uv run ruff format .`).
+
+**Frontend** (`cd frontend`; run `npm ci` first):
+- Dev server: `npm run dev`. It proxies `/api` to Caddy on `localhost:8080`, so start the stack first.
+- Tests: `npm test`. Lint: `npm run lint`. Typecheck: `npm run typecheck`. Build: `npm run build`.
+
+**CI** (`.github/workflows/ci.yml`) runs the backend checks, the frontend checks, and a stack smoke test (build, start, `/api/health/` and `/` through Caddy).
+
+**Not implemented yet:**
+- Sample ingest (`INGEST_LIMIT=50`): arrives with films in M2 and the worker in M3.
+- Evaluation harness: arrives in M7.
 
 ## Testing rules
 
