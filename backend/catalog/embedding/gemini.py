@@ -18,6 +18,7 @@ from catalog.http import (
     NetworkError,
     RetryPolicy,
     Transport,
+    parse_retry_after,
     request_json,
     urllib_transport,
 )
@@ -28,26 +29,72 @@ _MODEL_NAME = re.compile(r"^[a-z0-9][a-z0-9.\-]*$")
 _SERVER_ERRORS = frozenset({500, 502, 503, 504})
 
 
-def _error_code(response: HttpResponse) -> str | None:
+def _error_object(response: HttpResponse) -> dict[str, Any]:
     try:
         error = json.loads(response.body).get("error")
-        code = error.get("code") if isinstance(error, dict) else None
     except (ValueError, AttributeError):
-        return None
-    return code if isinstance(code, str) else None
+        return {}
+    return error if isinstance(error, dict) else {}
+
+
+def _error_detail(response: HttpResponse, type_suffix: str) -> list[dict[str, Any]]:
+    """Entries of the standard google.rpc `details` list, such as QuotaFailure or RetryInfo."""
+    details = _error_object(response).get("details")
+    if not isinstance(details, list):
+        return []
+    return [
+        d for d in details if isinstance(d, dict) and str(d.get("@type", "")).endswith(type_suffix)
+    ]
+
+
+def _is_daily_quota(response: HttpResponse) -> bool:
+    """True when the 429 says the per-day quota is used up, so waiting minutes will not help.
+
+    Live errors follow google.rpc: a QuotaFailure names the violated quota (for example one with
+    "PerDay" in its id). The API docs instead show a string code "quota_exceeded"; accept both.
+    """
+    error = _error_object(response)
+    if error.get("code") == "quota_exceeded":
+        return True
+    for failure in _error_detail(response, "QuotaFailure"):
+        violations = failure.get("violations")
+        for violation in violations if isinstance(violations, list) else []:
+            if not isinstance(violation, dict):
+                continue
+            text = f"{violation.get('quotaId', '')} {violation.get('quotaMetric', '')}"
+            letters = re.sub(r"[^a-z]", "", text.lower())
+            if "perday" in letters or "daily" in letters:
+                return True
+    return False
+
+
+def _retry_delay(response: HttpResponse) -> float | None:
+    """The Retry-After header, else the RetryInfo delay Google puts in the body (like "34s")."""
+    from_header = parse_retry_after(response.headers)
+    if from_header is not None:
+        return from_header
+    for info in _error_detail(response, "RetryInfo"):
+        delay = info.get("retryDelay")
+        if isinstance(delay, str) and delay.endswith("s"):
+            try:
+                seconds = float(delay[:-1])
+            except ValueError:
+                continue
+            if seconds >= 0:
+                return seconds
+    return None
 
 
 def _error_message(response: HttpResponse) -> str:
-    try:
-        message = json.loads(response.body)["error"]["message"]
-    except (ValueError, KeyError, TypeError):
+    message = _error_object(response).get("message")
+    if not isinstance(message, str):
         return f"HTTP {response.status}"
-    return f"HTTP {response.status}: {str(message)[:200]}"
+    return f"HTTP {response.status}: {message[:200]}"
 
 
 def _is_retryable(response: HttpResponse) -> bool:
     if response.status == 429:
-        return _error_code(response) != "quota_exceeded"
+        return not _is_daily_quota(response)
     return response.status in _SERVER_ERRORS
 
 
@@ -115,6 +162,7 @@ class GeminiEmbedder:
                 timeout=self._timeout,
                 retry=self._retry,
                 is_retryable=_is_retryable,
+                retry_after_of=_retry_delay,
                 sleep=self._sleep,
             )
         except HttpError as error:
@@ -132,8 +180,8 @@ class GeminiEmbedder:
         if response.status == 429:
             return EmbeddingRateLimited(
                 message,
-                retry_after=error.retry_after,
-                quota_exhausted=_error_code(response) == "quota_exceeded",
+                retry_after=_retry_delay(response),
+                quota_exhausted=_is_daily_quota(response),
             )
         if response.status in _SERVER_ERRORS:
             return EmbeddingUnavailable(message)

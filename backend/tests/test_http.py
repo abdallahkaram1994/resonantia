@@ -87,6 +87,26 @@ def test_retry_after_longer_than_max_delay_fails_fast_without_sleeping() -> None
     assert len(transport.calls) == 1
 
 
+def test_a_custom_retry_delay_source_replaces_the_header() -> None:
+    clock = FakeClock()
+    transport = FakeTransport(status(429, {"Retry-After": "99"}), ok())
+
+    call(transport, clock, retry_after_of=lambda response: 4.0)
+
+    assert clock.sleeps == [4.0]
+
+
+def test_a_custom_retry_delay_longer_than_the_cap_fails_fast() -> None:
+    clock = FakeClock()
+    transport = FakeTransport(status(429), ok())
+
+    with pytest.raises(HttpError):
+        call(transport, clock, retry_after_of=lambda response: 500.0)
+
+    assert clock.sleeps == []
+    assert len(transport.calls) == 1
+
+
 def test_client_errors_are_not_retried() -> None:
     clock = FakeClock()
     transport = FakeTransport(status(400), ok())

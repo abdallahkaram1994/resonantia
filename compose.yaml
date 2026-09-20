@@ -32,6 +32,14 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      # web embeds each search query. Empty values fall back to the defaults in settings.py.
+      # The TMDB token is deliberately not passed: only host-run ingest needs it.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-}
+      EMBEDDING_REQUESTS_PER_MINUTE: ${EMBEDDING_REQUESTS_PER_MINUTE:-}
+      SEARCH_RESULT_LIMIT: ${SEARCH_RESULT_LIMIT:-}
+      SEARCH_MAX_QUERY_LENGTH: ${SEARCH_MAX_QUERY_LENGTH:-}
     command:
       - sh
       - -c

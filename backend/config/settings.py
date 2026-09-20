@@ -83,6 +83,10 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "").strip() or "gemini-embed
 EMBEDDING_DIM = env_int("EMBEDDING_DIM", 768)
 EMBEDDING_REQUESTS_PER_MINUTE = env_int("EMBEDDING_REQUESTS_PER_MINUTE", 60)
 
+# Search. Queries longer than the cap are rejected, not truncated, so their meaning never changes.
+SEARCH_RESULT_LIMIT = env_int("SEARCH_RESULT_LIMIT", 15)
+SEARCH_MAX_QUERY_LENGTH = env_int("SEARCH_MAX_QUERY_LENGTH", 200)
+
 # Film catalog (TMDB). Non-commercial use only; TMDB data must be refreshed within 6 months.
 TMDB_READ_ACCESS_TOKEN = os.environ.get("TMDB_READ_ACCESS_TOKEN", "").strip()
 TMDB_REQUESTS_PER_SECOND = env_int("TMDB_REQUESTS_PER_SECOND", 20)
