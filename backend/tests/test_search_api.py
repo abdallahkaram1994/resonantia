@@ -173,7 +173,7 @@ def test_the_length_cap_applies_after_normalization(client: Client) -> None:
     assert padded.status_code == 200
     assert over.status_code == 400
     assert "200" in over.json()["detail"]
-    assert len(embedder.calls) == 2
+    assert len(embedder.calls) == 1  # the padded query normalizes to the same cached text
 
 
 def test_the_length_cap_is_configurable(client: Client) -> None:

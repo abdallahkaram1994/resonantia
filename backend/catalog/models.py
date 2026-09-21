@@ -121,6 +121,33 @@ class SkippedRecord(models.Model):
         return f"{self.source}:{self.external_id} ({self.reason})"
 
 
+class QueryEmbedding(models.Model):
+    """A cached embedding of a search query, so repeating a search, or changing a filter on it,
+    does not spend another provider request (the free tier allows about 1,000 a day).
+
+    The key is a hash of the normalized query with the model and dimension, so a different model
+    never gets another model's vector. The query text itself is not stored: searches are anonymous.
+    """
+
+    text_hash = models.CharField(max_length=64)
+    embedding_model = models.CharField(max_length=100)
+    embedding_dim = models.PositiveSmallIntegerField()
+    embedding = VectorField(dimensions=EMBEDDING_DIMENSIONS)
+    # For pruning old rows (M6).
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["text_hash", "embedding_model", "embedding_dim"],
+                name="queryembedding_text_model_dim_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.text_hash[:8]} ({self.embedding_model})"
+
+
 class Score(models.Model):
     """Display-only. Scores are never embedded and never affect ranking."""
 

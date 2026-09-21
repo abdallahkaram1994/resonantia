@@ -1,16 +1,49 @@
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from django.db import DatabaseError, transaction
 from django.db.models import Q
 from pgvector.django import CosineDistance
 
+from catalog.embedding.base import Embedder
 from catalog.filters import ActiveFilter, predicate_for
-from catalog.models import Item
+from catalog.models import Item, QueryEmbedding
+from catalog.text import content_hash
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_query(raw: str) -> str:
     """Lowercase, trim, and collapse all whitespace runs to single spaces."""
     return " ".join(raw.split()).lower()
+
+
+def embed_query(embedder: Embedder, query: str) -> list[float]:
+    """The embedding of a normalized query, from the cache when it was embedded before.
+
+    Only successful embeddings are cached: an error from the provider passes through untouched and
+    the next search tries again. A cache that cannot be written never fails the search.
+    """
+    key = {
+        "text_hash": content_hash(query),
+        "embedding_model": embedder.model,
+        "embedding_dim": embedder.dimensions,
+    }
+    cached = QueryEmbedding.objects.filter(**key).values_list("embedding", flat=True).first()
+    if cached is not None:
+        return [float(value) for value in cached]
+
+    vector = embedder.embed([query], "query")[0]
+    try:
+        # A concurrent search may have stored the same query a moment ago; that is not an error.
+        with transaction.atomic():
+            QueryEmbedding.objects.bulk_create(
+                [QueryEmbedding(embedding=list(vector), **key)], ignore_conflicts=True
+            )
+    except DatabaseError as error:
+        logger.warning("Could not cache a query embedding (%s)", type(error).__name__)
+    return vector
 
 
 @dataclass(frozen=True)

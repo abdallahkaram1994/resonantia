@@ -12,7 +12,7 @@ from catalog.embedding.base import EmbeddingError, EmbeddingRateLimited
 from catalog.embedding.factory import get_embedder
 from catalog.filters import FilterError, parse_filters, parse_media_types
 from catalog.models import MediaType
-from catalog.search import normalize_query, retrieve_by_type
+from catalog.search import embed_query, normalize_query, retrieve_by_type
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def search(request: Request) -> Response:
     # Failures are logged without the query text: searches are anonymous and stay private.
     try:
         embedder = get_embedder()
-        vector = embedder.embed([query], "query")[0]
+        vector = embed_query(embedder, query)
     except ImproperlyConfigured as error:
         logger.error("Search is misconfigured: %s", error)
         return _unavailable()
