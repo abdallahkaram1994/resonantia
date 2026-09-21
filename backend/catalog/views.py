@@ -10,13 +10,16 @@ from rest_framework.response import Response
 
 from catalog.embedding.base import EmbeddingError, EmbeddingRateLimited
 from catalog.embedding.factory import get_embedder
+from catalog.filters import FilterError, parse_filters, parse_media_types
 from catalog.models import MediaType
-from catalog.search import normalize_query, retrieve
+from catalog.search import normalize_query, retrieve_by_type
 
 logger = logging.getLogger(__name__)
 
-# The catalog holds films only for now; media type toggles arrive with the filter registry (M4).
-SEARCH_MEDIA_TYPES = (MediaType.FILM,)
+# Types searched when the request does not choose (`types=`). This becomes all three when the
+# hybrid layout lands (M4 slice 3): until then a mixed list would be ordered by raw scores, which
+# are not comparable across types.
+DEFAULT_MEDIA_TYPES = (MediaType.FILM,)
 
 
 def _unavailable(retry_after: float | None = None) -> Response:
@@ -44,6 +47,13 @@ def search(request: Request) -> Response:
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # Bad filter values are refused before the embedder is called, so they cost no quota.
+    try:
+        media_types = parse_media_types(request.query_params, DEFAULT_MEDIA_TYPES)
+        filters = parse_filters(request.query_params)
+    except FilterError as error:
+        return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
     # Failures are logged without the query text: searches are anonymous and stay private.
     try:
         embedder = get_embedder()
@@ -58,13 +68,19 @@ def search(request: Request) -> Response:
         logger.warning("Embedding failed during search (%s): %s", type(error).__name__, error)
         return _unavailable()
 
-    hits = retrieve(
+    limit = settings.SEARCH_RESULT_LIMIT
+    pools = retrieve_by_type(
         vector,
-        media_types=SEARCH_MEDIA_TYPES,
+        media_types=media_types,
+        filters=filters,
         model=embedder.model,
         dim=embedder.dimensions,
-        limit=settings.SEARCH_RESULT_LIMIT,
+        limit=limit,
     )
+    # Interim: one list ordered by raw score. The layout slice replaces this merge.
+    hits = sorted(
+        (hit for pool in pools.values() for hit in pool), key=lambda hit: (-hit.score, hit.item.id)
+    )[:limit]
     return Response(
         {
             "query": query,

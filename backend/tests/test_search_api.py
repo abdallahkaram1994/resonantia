@@ -51,10 +51,10 @@ def add_item(
     return item
 
 
-def search(client: Client, query: str, embedder: StaticEmbedder | None = None):
+def search(client: Client, query: str, embedder: StaticEmbedder | None = None, **params: str):
     embedder = embedder or StaticEmbedder(QUERY_VECTOR)
     with mock.patch(GET_EMBEDDER, return_value=embedder):
-        return client.get("/api/search/", {"q": query})
+        return client.get("/api/search/", {"q": query, **params})
 
 
 def titles(response) -> list[str]:
@@ -266,3 +266,120 @@ def test_failures_are_logged_without_the_query_text(
     assert "EmbeddingUnavailable" in caplog.text
     assert "provider is down" in caplog.text
     assert "private" not in caplog.text
+
+
+# --- media type toggles and the era filter --------------------------------------------------------
+
+
+def add_one_of_each(year: int | None = 2001) -> None:
+    add_item("The Film", vec(1.0), year=year)
+    add_item("The Game", vec(1.0), media_type=MediaType.GAME, year=year)
+    add_item("The Album", vec(1.0), media_type=MediaType.ALBUM, year=year)
+
+
+def test_films_are_searched_when_no_types_are_chosen(client: Client) -> None:
+    add_one_of_each()
+
+    assert titles(search(client, "x")) == ["The Film"]
+
+
+@pytest.mark.parametrize(
+    ("types", "expected"),
+    [
+        ("game", {"The Game"}),
+        ("album", {"The Album"}),
+        ("film,game", {"The Film", "The Game"}),
+        ("album,game,film", {"The Film", "The Game", "The Album"}),
+    ],
+)
+def test_the_types_parameter_chooses_which_types_are_searched(
+    client: Client, types: str, expected: set[str]
+) -> None:
+    add_one_of_each()
+
+    assert set(titles(search(client, "x", types=types))) == expected
+
+
+def test_a_type_that_is_switched_off_never_appears_however_close(client: Client) -> None:
+    add_item("Far film", vec(1.0, 9.0))
+    add_item("Exact game", vec(1.0), media_type=MediaType.GAME)
+
+    assert titles(search(client, "x", types="film")) == ["Far film"]
+
+
+@pytest.mark.parametrize("types", ["", "book", "film,book", " , "])
+def test_bad_types_are_a_400_that_costs_no_embedding_request(client: Client, types: str) -> None:
+    embedder = StaticEmbedder(QUERY_VECTOR)
+
+    response = search(client, "x", embedder, types=types)
+
+    assert response.status_code == 400
+    assert "media type" in response.json()["detail"].lower()
+    assert embedder.calls == []
+
+
+@pytest.mark.parametrize("eras", ["1990", "1999-1990", "1980-1989,", "x" * 500])
+def test_bad_eras_are_a_400_that_costs_no_embedding_request(client: Client, eras: str) -> None:
+    embedder = StaticEmbedder(QUERY_VECTOR)
+
+    response = search(client, "x", embedder, eras=eras)
+
+    assert response.status_code == 400
+    assert "era" in response.json()["detail"].lower()
+    assert embedder.calls == []
+
+
+def test_a_blank_query_is_reported_before_a_bad_filter(client: Client) -> None:
+    response = search(client, "  ", eras="nope")
+
+    assert response.status_code == 400
+    assert "'q'" in response.json()["detail"]
+
+
+def test_an_era_keeps_only_items_released_in_it(client: Client) -> None:
+    for year in (1979, 1980, 1989, 1990):
+        add_item(f"Film {year}", vec(1.0), year=year)
+
+    assert set(titles(search(client, "x", eras="1980-1989"))) == {"Film 1980", "Film 1989"}
+
+
+def test_several_eras_match_items_in_any_of_them(client: Client) -> None:
+    for year in (1975, 1985, 1995, 2005):
+        add_item(f"Film {year}", vec(1.0), year=year)
+
+    found = titles(search(client, "x", eras="1980-1989,2000-2009"))
+
+    assert set(found) == {"Film 1985", "Film 2005"}
+
+
+def test_items_without_a_year_stay_unless_an_era_is_chosen(client: Client) -> None:
+    add_item("Undated", vec(1.0), year=None)
+    add_item("Dated", vec(1.0, 1.0), year=1985)
+
+    assert titles(search(client, "x")) == ["Undated", "Dated"]
+    assert titles(search(client, "x", eras="1980-1989")) == ["Dated"]
+
+
+def test_an_empty_eras_parameter_means_no_era_filter(client: Client) -> None:
+    add_item("Undated", vec(1.0), year=None)
+
+    assert titles(search(client, "x", eras="")) == ["Undated"]
+
+
+def test_an_era_narrows_every_chosen_type_and_only_the_chosen_types(client: Client) -> None:
+    for media_type in (MediaType.FILM, MediaType.GAME, MediaType.ALBUM):
+        add_item(f"Old {media_type}", vec(1.0), media_type=media_type, year=1975)
+        add_item(f"New {media_type}", vec(1.0), media_type=media_type, year=1985)
+        add_item(f"Undated {media_type}", vec(1.0), media_type=media_type, year=None)
+
+    found = titles(search(client, "x", types="film,game", eras="1980-1989"))
+
+    assert set(found) == {"New film", "New game"}
+
+
+def test_filters_leave_the_query_embedding_alone(client: Client) -> None:
+    embedder = StaticEmbedder(QUERY_VECTOR)
+
+    search(client, "Rainy Night", embedder, types="game", eras="1980-1989")
+
+    assert embedder.calls == [(["rainy night"], "query")]
