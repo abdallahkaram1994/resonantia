@@ -83,6 +83,18 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "").strip() or "gemini-embed
 EMBEDDING_DIM = env_int("EMBEDDING_DIM", 768)
 EMBEDDING_REQUESTS_PER_MINUTE = env_int("EMBEDDING_REQUESTS_PER_MINUTE", 60)
 
+# Game catalog (IGDB, through a Twitch app's client credentials). Free for non-commercial use.
+TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID", "").strip()
+TWITCH_CLIENT_SECRET = os.environ.get("TWITCH_CLIENT_SECRET", "").strip()
+IGDB_REQUESTS_PER_SECOND = env_int("IGDB_REQUESTS_PER_SECOND", 3)
+IGDB_COVER_SIZE = os.environ.get("IGDB_COVER_SIZE", "").strip() or "t_cover_big"
+# A game needs this many ratings to count as popular; a band below it feeds the mid-tail slice.
+# Rating counts only select games. They never affect ranking.
+GAME_MIN_RATING_COUNT = env_int("GAME_MIN_RATING_COUNT", 75)
+GAME_MID_TAIL_MIN_RATING_COUNT = env_int("GAME_MID_TAIL_MIN_RATING_COUNT", 25)
+# IGDB keywords are user tags and some games have hundreds, so only this many go into the text.
+GAME_MAX_KEYWORDS = env_int("GAME_MAX_KEYWORDS", 10, minimum=0)
+
 # Search. Queries longer than the cap are rejected, not truncated, so their meaning never changes.
 SEARCH_RESULT_LIMIT = env_int("SEARCH_RESULT_LIMIT", 15)
 SEARCH_MAX_QUERY_LENGTH = env_int("SEARCH_MAX_QUERY_LENGTH", 200)

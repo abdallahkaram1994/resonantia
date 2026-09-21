@@ -130,3 +130,18 @@ def test_progress_callback_sees_each_saved_vector() -> None:
     embed_pending(FakeEmbedder(), progress=lambda stats: seen.append(stats.embedded))
 
     assert seen == [1, 2, 3]
+
+
+def test_films_and_games_are_embedded_together_by_the_same_job() -> None:
+    from catalog.ingest import upsert_item
+    from tests.factories import make_item_record
+
+    add_films(2)
+    upsert_item(make_item_record("1"))
+    upsert_item(make_item_record("2", media_type="album", source="musicbrainz", keywords=("rock",)))
+
+    stats = embed_pending(FakeEmbedder())
+
+    assert stats.embedded == 4
+    assert set(Item.objects.values_list("media_type", flat=True)) == {"film", "game", "album"}
+    assert Item.objects.filter(embedding__isnull=True).count() == 0

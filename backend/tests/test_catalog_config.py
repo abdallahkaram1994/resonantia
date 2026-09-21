@@ -3,7 +3,8 @@ from django.core.checks import run_checks
 from django.core.exceptions import ImproperlyConfigured
 from django.test import override_settings
 
-from catalog.sources.factory import get_film_source
+from catalog.sources.factory import get_film_source, get_game_source
+from catalog.sources.igdb import IgdbGameSource
 from catalog.sources.tmdb import TmdbFilmSource
 from tests.helpers import load_settings_value
 
@@ -72,3 +73,69 @@ def test_zero_is_allowed_for_the_ingest_limit_and_mid_tail_percent() -> None:
         result = load_settings_value(name, {name: "0"})
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "0"
+
+
+@pytest.mark.parametrize(("mid_tail", "popular"), [(75, 75), (100, 75)])
+def test_game_mid_tail_band_must_sit_below_the_popularity_threshold(
+    mid_tail: int, popular: int
+) -> None:
+    with override_settings(GAME_MID_TAIL_MIN_RATING_COUNT=mid_tail, GAME_MIN_RATING_COUNT=popular):
+        assert "catalog.E003" in check_ids()
+
+
+def test_default_game_thresholds_pass_the_system_checks() -> None:
+    assert "catalog.E003" not in check_ids()
+
+
+@pytest.mark.parametrize(
+    ("client_id", "client_secret"),
+    [("", ""), ("id", ""), ("", "secret")],
+)
+def test_game_source_needs_both_twitch_credentials(client_id: str, client_secret: str) -> None:
+    with (
+        override_settings(TWITCH_CLIENT_ID=client_id, TWITCH_CLIENT_SECRET=client_secret),
+        pytest.raises(ImproperlyConfigured, match="TWITCH_CLIENT_ID"),
+    ):
+        get_game_source()
+
+
+@override_settings(TWITCH_CLIENT_ID="id", TWITCH_CLIENT_SECRET="secret")
+def test_game_source_is_built_from_settings() -> None:
+    assert isinstance(get_game_source(), IgdbGameSource)
+
+
+def test_game_settings_have_sensible_defaults() -> None:
+    expected = {
+        "IGDB_REQUESTS_PER_SECOND": "3",
+        "IGDB_COVER_SIZE": "t_cover_big",
+        "GAME_MIN_RATING_COUNT": "75",
+        "GAME_MID_TAIL_MIN_RATING_COUNT": "25",
+        "GAME_MAX_KEYWORDS": "10",
+    }
+    for name, value in expected.items():
+        result = load_settings_value(name, {})
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == value, name
+
+
+@pytest.mark.parametrize(
+    ("name", "bad"),
+    [
+        ("IGDB_REQUESTS_PER_SECOND", "0"),
+        ("GAME_MIN_RATING_COUNT", "0"),
+        ("GAME_MAX_KEYWORDS", "-1"),
+        ("GAME_MAX_KEYWORDS", "many"),
+    ],
+)
+def test_game_settings_reject_out_of_range_values(name: str, bad: str) -> None:
+    result = load_settings_value(name, {name: bad})
+
+    assert result.returncode != 0
+    assert name in result.stderr
+
+
+def test_zero_keywords_is_allowed() -> None:
+    result = load_settings_value("GAME_MAX_KEYWORDS", {"GAME_MAX_KEYWORDS": "0"})
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "0"
