@@ -91,6 +91,22 @@ jobs:
         run: |
           body=$(curl --fail --silent --show-error http://localhost:8080/)
           echo "$body" | grep -q '<title>Resonantia</title>'
+      - name: Worker runs a queued job
+        # `up --wait` has already waited for the worker's healthcheck. This proves it also
+        # takes a job from the queue and finishes it. embed_pending needs no keys when nothing
+        # is waiting to be embedded.
+        run: |
+          docker compose exec -T web python manage.py enqueue_job embed_pending
+          for attempt in $(seq 1 30); do
+            status=$(docker compose exec -T db sh -c \
+              'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select status from procrastinate_jobs order by id desc limit 1"')
+            echo "attempt $attempt: job status is '$status'"
+            if [ "$status" = "succeeded" ]; then exit 0; fi
+            if [ "$status" = "failed" ]; then break; fi
+            sleep 2
+          done
+          docker compose logs --no-color worker
+          exit 1
       - name: Show logs on failure
         if: failure()
         run: docker compose logs --no-color

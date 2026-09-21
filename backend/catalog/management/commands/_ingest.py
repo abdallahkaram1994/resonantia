@@ -3,6 +3,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.core.management.base import BaseCommand, CommandError
 
 from catalog.ingest import IngestStats, ingest_items
+from catalog.jobs import resolve_limit
 from catalog.sources.base import ItemSource, SourceError
 
 
@@ -28,9 +29,7 @@ class IngestCommand(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        limit = options["limit"]
-        if limit is None:
-            limit = settings.INGEST_LIMIT or settings.CATALOG_TARGET_PER_TYPE
+        limit = resolve_limit(options["limit"])
         if limit < 1:
             raise CommandError("--limit must be at least 1")
         try:

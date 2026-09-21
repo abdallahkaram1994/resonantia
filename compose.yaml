@@ -58,6 +58,31 @@ services:
       retries: 5
       start_period: 20s
 
+  worker:
+    # Same image as web. It runs the background jobs in catalog/tasks.py (SPEC section 9b) and,
+    # unlike web, receives the source keys, because ingest jobs call TMDB, IGDB and Last.fm.
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Host tools reach Postgres on localhost; from inside Compose it is the db service.
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+    command:
+      - sh
+      - -c
+      - exec python manage.py procrastinate worker --queues ingest,maintenance --concurrency ${WORKER_CONCURRENCY:-2}
+    depends_on:
+      # web applies the migrations, including the queue's own tables, before it reports healthy.
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "procrastinate", "healthchecks"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
   caddy:
     build:
       context: .

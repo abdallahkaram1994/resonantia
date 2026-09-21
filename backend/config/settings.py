@@ -55,6 +55,8 @@ ALLOWED_HOSTS = [
 ]
 
 INSTALLED_APPS = [
+    # Procrastinate (the Postgres-backed task queue) must come before the apps that define tasks.
+    "procrastinate.contrib.django",
     "rest_framework",
     "core",
     "catalog",
@@ -152,6 +154,21 @@ MID_TAIL_PERCENT = env_int("MID_TAIL_PERCENT", 10, minimum=0, maximum=100)
 CATALOG_TARGET_PER_TYPE = env_int("CATALOG_TARGET_PER_TYPE", 2000)
 # Cap for sample runs (for example 50). 0 means use CATALOG_TARGET_PER_TYPE.
 INGEST_LIMIT = env_int("INGEST_LIMIT", 0, minimum=0)
+
+# Logs go to the console (Docker collects them). Job progress from the worker is INFO. Query text
+# is never logged.
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "").strip().upper() or "INFO"
+if LOG_LEVEL not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+    raise ImproperlyConfigured("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR or CRITICAL")
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"plain": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
+    "root": {"handlers": ["console"], "level": LOG_LEVEL},
+    # Printed twice on every start-up; the worker's job messages are the useful ones.
+    "loggers": {"procrastinate.blueprints": {"level": "WARNING"}},
+}
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
