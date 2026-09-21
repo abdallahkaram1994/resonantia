@@ -48,16 +48,20 @@ Resonantia is a vibe-first search across **games, films, and albums**. A visitor
 
 Keep this section current. Run from the repo root unless a `cd` is shown. Prerequisites: Docker with Compose, `uv`, Node 24.
 
-**Setup (once):** `cp .env.example .env`, then set `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`, `GEMINI_API_KEY` and `TMDB_READ_ACCESS_TOKEN`. Compose refuses to start and names any required variable that is missing. Define each variable once (Compose uses the last duplicate, `uv run --env-file` the first) and use letters and digits only in `POSTGRES_PASSWORD`. The database keeps its first password, so after changing it run `docker compose down -v`.
+**Setup (once):** `cp .env.example .env`, then set `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`, `GEMINI_API_KEY` and `TMDB_READ_ACCESS_TOKEN`. To load games also set `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET`; to load albums set `LASTFM_API_KEY` and `CONTACT_EMAIL` (goes into the MusicBrainz and Wikipedia User-Agent). Compose refuses to start and names any required variable that is missing. Define each variable once (Compose uses the last duplicate, `uv run --env-file` the first) and use letters and digits only in `POSTGRES_PASSWORD`. The database keeps its first password, so after changing it run `docker compose down -v`.
 
 **Start the stack:** `docker compose up --build`, then open http://localhost:8080 (Caddy serves the built frontend and proxies `/api` to Django). Stop with `docker compose down`; add `-v` to also delete the database volume.
 
 **Migrations:** `web` runs `manage.py migrate` on every start, so `docker compose up` applies them. Manually: `docker compose run --rm web python manage.py migrate`.
 
-**Load films** (host, against the loopback database; `docker compose up -d db` first; both are resumable):
-- `cd backend && uv run --env-file ../.env python manage.py ingest_films --limit 50` fetches films from TMDB (`--limit`, else `INGEST_LIMIT`, else `CATALOG_TARGET_PER_TYPE`) and warns when catalog data nears TMDB's 6-month limit.
-- `uv run --env-file ../.env python manage.py embed_items [--limit N]` embeds pending items with Gemini. The free tier allows about 1,000 requests a day, so it stops cleanly when the quota runs out; run it again the next day.
-- Search: `curl 'http://localhost:8080/api/search/?q=a%20rainy%20night%20drive'` (spends one embedding request).
+**Load the catalog** (host, against the loopback database; `docker compose up -d db` first; all are resumable and idempotent). Run from `backend/`; the limit is `--limit`, else `INGEST_LIMIT`, else `CATALOG_TARGET_PER_TYPE`:
+- `uv run --env-file ../.env python manage.py ingest_films --limit 50` fetches films from TMDB and warns when catalog data nears TMDB's 6-month limit.
+- `... ingest_games --limit 50` fetches main games from IGDB (Twitch OAuth).
+- `... ingest_albums --limit 50 [--retry-skipped]` finds albums on Last.fm, identifies them at MusicBrainz by id, and adds covers and Wikipedia summaries. About 3 to 4 seconds per album. It prints why albums were left out; `--retry-skipped` re-checks ones rejected earlier.
+- `... embed_items [--limit N]` embeds pending items of every type with Gemini. The free tier allows about 1,000 requests a day, so it stops cleanly when the quota runs out; run it again the next day.
+- Search (films only until M4): `curl 'http://localhost:8080/api/search/?q=a%20rainy%20night%20drive'` (spends one embedding request).
+
+**Worker** (`worker` service, started by `docker compose up`; needs `web` healthy first): `docker compose exec web python manage.py enqueue_job <ingest_films|ingest_games|ingest_albums|embed_pending> [--limit N]`, then `docker compose logs -f worker`. The same job cannot wait in the queue twice. Health: `docker compose exec worker python manage.py procrastinate healthchecks`. Settings: `WORKER_CONCURRENCY`, `LOG_LEVEL`.
 
 **Backend tests** (needs the database: `docker compose up -d db`):
 `cd backend && uv run --env-file ../.env pytest`
@@ -68,10 +72,11 @@ Keep this section current. Run from the repo root unless a `cd` is shown. Prereq
 - Dev server: `npm run dev`. It proxies `/api` to Caddy on `localhost:8080`, so start the stack first.
 - Tests: `npm test`. Lint: `npm run lint`. Typecheck: `npm run typecheck`. Build: `npm run build`.
 
-**CI** (`.github/workflows/ci.yml`) runs the backend checks, the frontend checks, and a stack smoke test (build, start, `/api/health/` and `/` through Caddy).
+**CI** (`.github/workflows/ci.yml`) runs the backend checks, the frontend checks, and a stack smoke test (build, start, `/api/health/` and `/` through Caddy, and a queued `embed_pending` job that the worker must finish).
 
 **Not implemented yet:**
-- Ingest for games and albums, and running ingest on the worker: M3.
+- Search across all three types, filters and layout: M4. (`/api/search/` returns films only.)
+- Periodic worker jobs (pruning, refresh, pre-warming): M6.
 - Evaluation harness: M7.
 
 ## Testing rules

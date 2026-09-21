@@ -1,6 +1,6 @@
 # Resonantia — Project Spec
 
-**Status:** requirements settled; milestones 1 (scaffold) and 2 (films end to end) built.
+**Status:** requirements settled; milestones 1 (scaffold), 2 (films end to end) and 3 (games, albums and the worker) built.
 **Purpose:** portfolio project demonstrating agentic development with Claude. Live for roughly one year while job hunting, then redeployable from the repo plus a database dump.
 
 Items marked **(default)** were proposed as sensible defaults and not explicitly debated. Items marked **(verify)** rely on third-party facts that must be checked against current provider docs before building on them.
@@ -51,11 +51,11 @@ The differentiator is cross-media mood matching in one shared embedding space. I
 | Source | Used for | Notes |
 |---|---|---|
 | TMDB | Films: metadata, posters, overview, ratings (`vote_average`, `vote_count`), streaming availability by region | TMDB logo and non-endorsement notice required. **Non-commercial use only.** Data must not be cached longer than 6 months. Terms section 1.C also restrict use "in connection with... a machine learning or AI based Application"; that risk is accepted (see the decision log). Availability is JustWatch-powered. |
-| IGDB (via Twitch OAuth) | Games: metadata, covers, summary, ratings, store links | Free. Verify exact rating/count field names. |
-| MusicBrainz | Albums: canonical release groups, artists, year, Wikidata links | ~1 request/second. Descriptive User-Agent required. |
-| Last.fm | Album discovery (popular albums per genre tag), tags | Free API key. Popularity, not quality. |
-| Cover Art Archive | Album covers | Linked from MusicBrainz. |
-| Wikipedia (MediaWiki API) + Wikidata | Album summaries | CC BY-SA: show "Source: Wikipedia" link and license note. Descriptive User-Agent required. |
+| IGDB (via Twitch OAuth) | Games: metadata, covers, summary, ratings, store links | Free for non-commercial use under the Twitch Developer Services Agreement (see the decision log). Token by client credentials; about 4 requests/second. Field names verified against the live API in M3 (section 5). Store links and attribution wording are still to do (M8). |
+| MusicBrainz | Albums: canonical release groups, artists, year, Wikidata links | ~1 request/second (503 when exceeded). Descriptive User-Agent with a contact required. Core data is CC0; its tags and genres are CC BY-NC-SA, so we do not use them. |
+| Last.fm | Album discovery (popular albums per genre tag), tags | Free API key, **non-commercial use only**. Popularity, not quality. Its terms give a "temporary" licence limited to a small portion of the data, and ask for credit with the "powered by AudioScrobbler" button (decision log). |
+| Cover Art Archive | Album covers | Found by release-group id. A HEAD request tells us whether art exists (307 to archive.org, or 404). We store the stable `coverartarchive.org` URL, never the redirect target. |
+| Wikipedia (MediaWiki API) + Wikidata | Album summaries | CC BY-SA: show "Source: Wikipedia" link and license note. Descriptive User-Agent required. Wikidata gives the English article title; the intro text is fetched in batches. |
 | OMDb | Display-only Rotten Tomatoes/Metacritic scores | ~1,000 requests/day free: fetch lazily on detail-page view and cache. |
 | Gemini API | LLM parsing/rerank/explain and embeddings | Free tier, no card. Embeddings are verified (section 6). Free-tier content may be used by Google and read by human reviewers (decision log). **(verify)** LLM models and limits in M5. |
 | Groq or Mistral | Fallback LLM provider | Free tier. **(verify)** |
@@ -74,9 +74,21 @@ The differentiator is cross-media mood matching in one shared embedding space. I
   - Film: overview and at least one genre or keyword
   - Game: summary and at least one genre or theme
   - Album: tags present (a Wikipedia summary is *not* required)
-- **Album ingestion:** Last.fm top albums across ~50–100 genre tags → resolve to a MusicBrainz release group (Last.fm often returns the MBID) → Cover Art Archive for art → Wikipedia via the Wikidata link on the MusicBrainz record. **Albums that cannot be matched cleanly are dropped; never guess by title search.**
-- Ingest is a config-driven, resumable, throttled background job. `INGEST_LIMIT=N` per type for small sample runs. Until the worker arrives in M3 it runs as management commands (`ingest_films`, then `embed_items`) on the developer's machine.
+- **Album ingestion:** Last.fm top albums across ~50–100 genre tags → resolve to a MusicBrainz release group (Last.fm often returns the MBID) → Cover Art Archive for art → Wikipedia via the Wikidata link on the MusicBrainz record. **Albums that cannot be matched cleanly are dropped; never guess by title search.** The exact rules are under "Album resolution" below.
+- Ingest is a config-driven, resumable, throttled background job. `INGEST_LIMIT=N` per type for small sample runs. It runs as management commands (`ingest_films`, `ingest_games`, `ingest_albums`, then `embed_items`) on the developer's machine, and the same code runs as worker jobs (`enqueue_job`, section 9b) for small top-ups.
 - **Film selection** (all thresholds in config): "popular" means at least `FILM_MIN_VOTE_COUNT` TMDB votes (default 1,000), most-voted first. The mid-tail slice (`MID_TAIL_PERCENT`, default 10%, shared by every media type) comes from the band starting at `FILM_MID_TAIL_MIN_VOTE_COUNT` (default 200) up to the popular threshold, ordered by popularity. Vote counts only select films; they never affect ranking.
+- **Game selection** (all thresholds in config): **main games only**, meaning IGDB `game_type = 0` with no `version_parent`, which leaves out DLC, expansions, bundles, editions, remakes and remasters. (The older `category` field is deprecated and returns nothing.) "Popular" means at least `GAME_MIN_RATING_COUNT` ratings (default 75, which about 2,100 games meet), most-rated first. The mid-tail band runs from `GAME_MID_TAIL_MIN_RATING_COUNT` (default 25) up to that threshold. One query returns 100 games with genres, themes, keywords and the cover id, so there are no per-game detail calls. IGDB keywords are noisy user tags (some games have 200), so only `GAME_MAX_KEYWORDS` (default 10) go into the text. The IGDB rating is stored as a display-only `Score` and never embedded.
+- **Album selection** (all thresholds in config): "popular" means at least `ALBUM_MIN_LISTENERS` Last.fm listeners (default 50,000) on `album.getInfo`. The mid-tail band runs from `ALBUM_MID_TAIL_MIN_LISTENERS` (default 10,000) up to that. Popular albums fill the first pages of every tag and the mid-tail band only appears deep in the lists, so that search starts at `ALBUM_MID_TAIL_START_PAGE` (default 20) and gives up, with a hint, after `ALBUM_MID_TAIL_MAX_SCAN` albums (default 1,000). The tags come from `catalog/data/lastfm_tags.txt` (70 genre tags); `lastfm_tag_blocklist.txt` removes listener tags such as "seen live" and "favourites", and an album's own artist and title, before the rest (at most `ALBUM_MAX_TAGS`, default 10) go into the text. Listener counts only select albums; they never affect ranking.
+- **Album resolution (never by title).** Every step goes by id:
+  1. Last.fm `tag.getTopAlbums` gives name, artist and a release MBID. **An album without an MBID is dropped.**
+  2. `album.getInfo` by MBID gives tags and listeners. No usable tags, no listener count, or too few listeners: dropped.
+  3. MusicBrainz `release/{mbid}` resolves the release to its **release group**; the release-group lookup gives the title, artist credit, `first-release-date` and the Wikidata relation. Only **primary type Album with no secondary type** is kept, so live albums, compilations, EPs, singles and soundtracks are dropped.
+  4. Several releases of one album (several tags, reissues) map to one item through the release-group id. Every release id is stored as an `ExternalId`.
+  5. The Cover Art Archive answers a HEAD for the release group. An album with no cover is kept, with no cover.
+  6. The Wikidata id gives the English article title, and the Wikipedia intro is fetched in batches (up to 50 ids and 20 titles per request). No article means no summary, which is allowed.
+  7. `first-release-date` may be `1997`, `1997-05`, a full date or empty; each maps to an integer year or null.
+- **Drop reasons.** The ingest commands count every album left out and print the reasons: `no_mbid`, `lastfm_not_found`, `no_tags`, `no_listener_count`, `below_threshold`, `already_ingested`, `previously_skipped`, `duplicate` (another release of an album already handled), `no_release_group`, `not_found` and `not_studio_album`. Releases MusicBrainz rejected are stored in `SkippedRecord` so a re-run does not repeat those lookups; `ingest_albums --retry-skipped` looks at them again.
+- **Album cost:** roughly 3 to 4 seconds per album (one Last.fm call, two MusicBrainz calls at one per second, and the Cover Art Archive and Wikipedia calls), so 2,000 albums take about two hours. Ingest is resumable, so it can be run in pieces.
 - **Embedding budget:** one embedding request per item, and the free tier allows about 1,000 requests a day, so embedding ~6,000 items takes about six days of quota, and a model change costs the same again. `embed_items` saves each vector as it arrives and stops cleanly when the quota runs out.
 - **TMDB refresh:** TMDB data must not be cached longer than 6 months. Every TMDB-sourced field carries `fetched_at`, and `ingest_films` warns when catalog data is older than `TMDB_MAX_CACHE_DAYS` (default 150). A restored dump counts, so check its age after a redeploy.
 - **Full ingest runs on the developer's machine.** The finished catalog (embeddings included) is dumped with `pg_dump` and restored on the VPS. Keep a copy of the dump for future redeploys.
@@ -86,13 +98,14 @@ The differentiator is cross-media mood matching in one shared embedding space. I
 ## 6. Data model (conceptual)
 
 - **Item:** canonical record. `media_type`, `title`, `release_year` (nullable int), `cover_url`, `summary`, `combined_text`, `content_hash`, `embedding` (vector), `embedding_model`, `embedding_dim`, timestamps. Type-specific fields live in a `details` JSON column. The database refuses a vector stored without its model and dimension.
-- **ExternalId:** maps an Item to source IDs (`source`, `external_id`). This is the entity-resolution layer.
+- **ExternalId:** maps an Item to source IDs (`source`, `external_id`). This is the entity-resolution layer. An album has one for its MusicBrainz release group (`musicbrainz`), one for every release seen (`musicbrainz-release`) and one for its Wikidata item.
+- **SkippedRecord:** `source`, `external_id`, `reason`, `checked_at`; unique per source and id. Remembers rejected source records (for example a live album) so a re-run does not repeat the lookups.
 - **Provenance:** every sourced field records `source` and `fetched_at`, kept as a JSON map on the item.
 - **Score (display-only):** `item`, `source`, `value`, `vote_count`, `fetched_at`; unique per item and source (a source with several scores, like OMDb, needs distinct source names).
 - **Availability (films):** `item`, `region`, `service`, `kind`, `fetched_at`. Store all regions from the TMDB response.
 - **Cache tables:** query embeddings, parsed intents, full results, rate-limit counters (Postgres, UNLOGGED or DB-backed).
 
-**Combined text per item:** title + genres/tags + summary (or Wikipedia text when available). One text, one vector. **Ratings are never embedded.**
+**Combined text per item:** title + genres/tags + summary (or Wikipedia text when available). One text, one vector. **Ratings are never embedded.** Films and games use a `Genres:` line and a `Keywords:` line. Albums add `By: <artist>` under the title and call their list `Tags:`. The film text is locked by golden-hash tests, because changing it would force re-embedding the whole film catalog.
 
 **Embeddings:** Gemini **`gemini-embedding-2`** reduced to **768 dimensions** (verified September 2026). It replaced the earlier default `gemini-embedding-001`, which is legacy with a shutdown announced for May 2028. It normalizes truncated vectors itself and accepts 8,192 input tokens. It has no task-type parameter, so retrieval instructions go in the text: documents are sent as `title: none | text: <combined text>` (the combined text already starts with the title) and queries as `task: search result | query: <text>`. **Each text is its own request**, because a list of texts in one request comes back as a single aggregated vector. Store the model and dimension per row, and only ever compare vectors of the same model and dimension (enforced in SQL). Changing the model means re-embedding the catalog. `content_hash` (sha256 of the combined text) skips unchanged items on re-runs: a changed text clears the stored vector so the item is embedded again.
 
@@ -202,7 +215,7 @@ Style reference: Letterboxd (poster-grid, clean, dense metadata). Flow: land →
 
 **Choice: Procrastinate**, a Postgres-backed task queue with a Django integration, retries, periodic tasks, and task locks. It runs as the `worker` container, built from the same image as `web` with a different command, and needs only the Postgres we already run.
 
-**Why not Celery:** Celery needs a separate broker (usually Redis or RabbitMQ), which adds a service and RAM on a 2 GB server. Also considered: django-q2, and Django's newer built-in tasks API with a database backend. Procrastinate was picked because retries, cron-style periodic tasks, and locks come built in with no extra infrastructure. Keep task code behind thin wrappers so swapping later is feasible. **(verify)** the current version and Django integration docs; the project has said it is looking for more maintainers.
+**Why not Celery:** Celery needs a separate broker (usually Redis or RabbitMQ), which adds a service and RAM on a 2 GB server. Also considered: django-q2, and Django's newer built-in tasks API with a database backend. Procrastinate was picked because retries, cron-style periodic tasks, and locks come built in with no extra infrastructure. Keep task code behind thin wrappers so swapping later is feasible. Version 3.9.0 with its Django integration was verified working in M3. The project has said it is looking for more maintainers.
 
 ### What runs on the worker
 
@@ -214,6 +227,14 @@ Style reference: Letterboxd (poster-grid, clean, dense metadata). Flow: land →
 | Refresh scores | Periodic (TTL of weeks) | TMDB and IGDB. OMDb stays lazy, not bulk. |
 | Cache and counter pruning | Periodic (hourly or daily) | Expired result, embedding, and intent cache rows; rate-limit counters. |
 | Pre-warm example queries | Periodic (daily) and after deploy | Uses the circuit-breaker budget; skipped when budget is low. |
+
+### Built in M3
+
+- **Jobs** (`backend/catalog/tasks.py`, all on the `ingest` queue): `ingest_films`, `ingest_games`, `ingest_albums` and `embed_pending`, each taking an optional `limit`. What a job does lives in `catalog/jobs.py`, shared with the management commands, so the queue stays a thin wrapper. An ingest job queues an `embed_pending` job when it finishes.
+- **Queue locks:** each job has its own queueing lock, so the same job cannot wait in the queue twice (a second request is refused and the command says so). `ingest_albums` also holds the `musicbrainz` lock, so two album jobs never run at once.
+- **Retries:** a temporary outage (`SourceUnavailable`, `EmbeddingUnavailable`) is retried three times, after about 8 seconds, 64 seconds and 8.5 minutes, so a job runs four times at most. A rejected key, bad configuration or a bug fails at once. Hitting the embedding quota is not a failure: `embed_pending` logs a warning, keeps its progress and returns.
+- **Running it:** `docker compose up` starts the `worker` service, which needs `web` to be healthy first (so the migrations, including the queue's own tables, are applied) and runs `manage.py procrastinate worker --queues ingest,maintenance --concurrency $WORKER_CONCURRENCY` (default 2). Its healthcheck is `procrastinate healthchecks`. Unlike `web`, it receives the whole `.env`, because ingest jobs call TMDB, IGDB and Last.fm. Queue a job with `manage.py enqueue_job <job> [--limit N]` and follow it with `docker compose logs -f worker`. The `maintenance` queue exists but has no jobs until M6.
+- **CI:** the stack job waits for the worker's healthcheck, queues `embed_pending` and waits for it to succeed.
 
 **Not queued:** the search request path stays synchronous. The OMDb lookup on a detail page runs in-request with a short timeout and is cached; if it fails, the page renders without those scores.
 
@@ -292,14 +313,15 @@ Start with films only (M2) because it exposes problems with the data model, embe
 ## 14. To verify before or during the build
 
 - LLM free-tier limits and fallback provider terms (M5). *Verified in M2:* Gemini embedding model, dimensions and free-tier limits; TMDB attribution wording and image URLs.
-- IGDB rating and count field names; OMDb daily quota
-- **Before M3:** whether the IGDB, Last.fm, MusicBrainz, Wikipedia and OMDb terms allow use in an AI application, as was checked for TMDB
+- OMDb daily quota. *Verified in M3 against the live IGDB API:* the rating and count fields (`total_rating`, `total_rating_count`), that `game_type` replaces the deprecated `category`, and the cover `image_id`.
+- **Terms and AI use.** Checked in M3: Last.fm (non-commercial only, "temporary" licence, no AI clause found), MusicBrainz (core data is CC0) and Wikipedia (CC BY-SA, attribution needed). **Still open:** the text of the Twitch Developer Services Agreement, which governs IGDB, could not be retrieved, so its rules on attribution, redistribution and AI use are unconfirmed (secondary sources: it bans re-distributing API data, no AI clause found). Also open: OMDb's terms, and how Last.fm's "temporary" licence applies to a stored catalog.
+- **Attribution to build in M4/M8:** the Last.fm "powered by AudioScrobbler" credit, "Source: Wikipedia" with the licence, and IGDB's required wording. The IGDB and Cover Art Archive image hosts also need to be allowed wherever the frontend restricts image sources.
 - **Before M9:** the Gemini free-tier clause that bars services likely accessed by under-18s
 - A real Gemini 429 response body: daily-quota detection follows the standard google.rpc format but has only been tested against synthetic fixtures
 - Turnstile terms; Cloudflare free-plan rule limits; Cloudflare Registrar availability and price for the chosen name
 - RackNerd datacenter options, renewal terms, and taxes at checkout
 - Claude Code usage limits on the current plan
-- Procrastinate's current version, Django integration docs, and periodic-task setup
+- Procrastinate's periodic-task setup (M6)
 - Name availability (domain, GitHub, trademark)
 
 ---
@@ -338,3 +360,13 @@ Start with films only (M2) because it exposes problems with the data model, embe
 | Query length | Over 200 characters is rejected with a 400, not truncated | Truncating would change the query's meaning |
 | Test fixtures | Invented third-party records in the provider's response shape | TMDB's terms limit caching and redistribution, and the repository is public |
 | Embedding budget | Resumable, quota-aware embedding; about 1,000 texts a day | The free tier allows 1,000 requests a day, so the full catalog takes about six days |
+| IGDB terms | Proceed with IGDB for games, for non-commercial use, accepting the Twitch Developer Services Agreement when registering the app | It is the only free official games source. The agreement text could not be retrieved, so it has not been checked for attribution or AI-use rules; the developer reads it at registration and reports any conflict. If IGDB objects, games can be swapped or dropped, since each source sits behind an adapter |
+| Last.fm terms | Use Last.fm for album discovery and tags, non-commercial only | Its terms grant a "temporary" licence limited to a small portion of its data (a 100 MB cap; the catalog needs about 2 MB) and ask for credit with the "powered by AudioScrobbler" button, which ships with the attribution footer. No AI clause found. Risk accepted; if Last.fm objects, albums need another tag source |
+| Album scope | Studio albums only (MusicBrainz primary type Album, no secondary type) | Live albums, compilations, EPs and singles would fill results with duplicates of the same music |
+| Game scope | Main games only (`game_type = 0`, no `version_parent`) | Editions, DLC, remakes and bundles would fill results with duplicates |
+| Album resolution | By id only. An album Last.fm lists without a MusicBrainz id is dropped, never matched by title | A wrong title match puts the wrong tags on the wrong record, and a dropped album costs nothing. Every drop is counted by reason and printed |
+| Skipped records | Rejected releases are remembered in `SkippedRecord`, re-checked only with `--retry-skipped` | Each rejection costs MusicBrainz calls at one per second, and a re-run would repeat them |
+| Mid-tail thresholds | Games 75 ratings (popular) and 25 (mid-tail floor); albums 50,000 and 10,000 listeners; mid-tail search starts at Last.fm page 20 | Set from live probes in M3: about 2,100 main games have 75 or more ratings, and page 1 of a Last.fm tag has a median near 1,000,000 listeners, so the band below 50,000 only appears deep in the list. Revisit with the full catalog |
+| Worker retries | Three retries with backoff (8 s, 64 s, 8.5 min) for temporary outages only | A brief outage should not lose a job, but a rejected key or a bug will not fix itself and should fail at once |
+| Worker keys | The `worker` service gets the whole `.env`; `web` keeps a short list | Ingest jobs call TMDB, IGDB and Last.fm. Web serves visitors and needs only the embedding key |
+| Worker scope in M3 | Jobs are ingest and embedding only, queued by `enqueue_job`. Periodic jobs come in M6 | The full ingest runs on the developer's machine; the VPS worker is for small top-ups |
