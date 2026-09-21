@@ -235,3 +235,28 @@ def test_a_film_record_maps_to_the_generic_record() -> None:
         "keywords": ["rain"],
     }
     assert item.is_embeddable is True
+
+
+def test_a_source_that_wants_to_know_is_told_how_many_each_stream_needs() -> None:
+    told: list[int] = []
+
+    class Wanting(FakeItemSource):
+        def set_target(self, count: int) -> None:
+            told.append(count)
+
+    source = Wanting(
+        popular=[make_item_record(str(i)) for i in range(1, 30)],
+        mid_tail=[make_item_record(str(i)) for i in range(101, 130)],
+    )
+
+    ingest_items(source, limit=20, mid_tail_percent=10)
+
+    assert told == [18, 2]  # popular first, then the mid-tail slice
+
+
+def test_a_source_without_targets_is_unaffected() -> None:
+    source = FakeItemSource(popular=[make_item_record(str(i)) for i in range(1, 6)])
+
+    stats = ingest_items(source, limit=5, mid_tail_percent=0)
+
+    assert stats.created == 5

@@ -1,7 +1,7 @@
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from catalog.models import MediaType
 
@@ -120,6 +120,14 @@ class ItemSource(Protocol):
     def mid_tail(self) -> Iterator[ItemRecord]:
         """Lesser-known items just below the threshold, so results can surprise."""
         ...
+
+
+@runtime_checkable
+class TargetAware(Protocol):
+    """A source that can look ahead in batches and so wants to know how many items are needed
+    from the next stream, to avoid fetching more than will be used."""
+
+    def set_target(self, count: int) -> None: ...
 
 
 class FilmSource(Protocol):

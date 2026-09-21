@@ -1,0 +1,73 @@
+# Last.fm tags used to discover popular albums, one per line. Pages of each tag are read in turn,
+# so the first albums ingested come from a spread of genres. Edit freely; blank lines and lines
+# starting with # are ignored.
+rock
+alternative
+alternative rock
+indie
+indie rock
+indie pop
+pop
+electronic
+ambient
+hip-hop
+rap
+jazz
+blues
+folk
+indie folk
+metal
+heavy metal
+punk
+post-punk
+classical
+soul
+rnb
+country
+reggae
+funk
+disco
+house
+techno
+trance
+drum and bass
+dubstep
+trip-hop
+shoegaze
+dream pop
+post-rock
+new wave
+synthpop
+industrial
+gothic
+hardcore
+grunge
+britpop
+psychedelic
+progressive rock
+art rock
+classic rock
+hard rock
+garage rock
+singer-songwriter
+acoustic
+lo-fi
+chillout
+downtempo
+idm
+experimental
+noise
+emo
+math rock
+stoner rock
+black metal
+death metal
+thrash metal
+doom metal
+ska
+bossa nova
+latin
+world
+90s
+80s
+70s

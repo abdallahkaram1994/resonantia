@@ -1,0 +1,15 @@
+{
+  "album": {
+    "name": "The Rainy Hour", "artist": "Fixture Band", "mbid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+    "url": "https://www.last.fm/music/Fixture+Band/The+Rainy+Hour", "listeners": "250000", "playcount": "9000000",
+    "tags": {"tag": [
+      {"name": "alternative rock", "url": "https://www.last.fm/tag/alternative+rock"},
+      {"name": "seen live", "url": "https://www.last.fm/tag/seen+live"},
+      {"name": "Melancholic", "url": "https://www.last.fm/tag/melancholic"},
+      {"name": "fixture band", "url": "https://www.last.fm/tag/fixture+band"},
+      {"name": "melancholic", "url": "https://www.last.fm/tag/melancholic"},
+      {"name": "the rainy hour", "url": "https://www.last.fm/tag/the+rainy+hour"},
+      {"name": "night drive", "url": "https://www.last.fm/tag/night+drive"}
+    ]}
+  }
+}
