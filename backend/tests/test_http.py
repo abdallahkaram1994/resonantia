@@ -12,8 +12,9 @@ from catalog.http import (
     parse_retry_after,
     request_json,
     urllib_transport,
+    urllib_transport_no_redirect,
 )
-from tests.helpers import FakeClock, FakeTransport
+from tests.helpers import FakeClock, FakeTransport, ScriptedTransport
 
 URL = "https://example.test/api"
 
@@ -175,7 +176,27 @@ def test_parse_retry_after() -> None:
     assert parse_retry_after({}) is None
 
 
+REQUESTED_PATHS: list[str] = []
+
+
 class _Handler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        REQUESTED_PATHS.append(self.path)
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_HEAD(self) -> None:
+        REQUESTED_PATHS.append(self.path)
+        if self.path == "/moved":
+            self.send_response(307)
+            self.send_header("Location", "/target")
+            self.send_header("Content-Length", "0")
+        else:
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0))
         received = json.loads(self.rfile.read(length))
@@ -224,3 +245,44 @@ def test_real_transport_returns_error_statuses_instead_of_raising(local_server: 
 def test_real_transport_turns_connection_failures_into_network_error() -> None:
     with pytest.raises(NetworkError):
         urllib_transport("GET", "http://127.0.0.1:1/", {}, None, 2.0)
+
+
+def test_the_no_redirect_transport_reports_a_redirect_instead_of_following_it(
+    local_server: str,
+) -> None:
+    REQUESTED_PATHS.clear()
+
+    response = urllib_transport_no_redirect("HEAD", local_server + "/moved", {}, None, 5.0)
+
+    assert response.status == 307
+    assert response.headers["Location"] == "/target"
+    assert REQUESTED_PATHS == ["/moved"]  # /target was never requested
+
+
+def test_the_normal_transport_follows_the_same_redirect(local_server: str) -> None:
+    REQUESTED_PATHS.clear()
+
+    response = urllib_transport("HEAD", local_server + "/moved", {}, None, 5.0)
+
+    assert response.status == 200
+    assert REQUESTED_PATHS == ["/moved", "/target"]
+
+
+def test_the_no_redirect_transport_still_turns_connection_failures_into_network_error() -> None:
+    with pytest.raises(NetworkError):
+        urllib_transport_no_redirect("HEAD", "http://127.0.0.1:1/", {}, None, 2.0)
+
+
+def test_a_raw_body_is_sent_with_its_content_type() -> None:
+    transport = ScriptedTransport(lambda method, url, headers, body: ok({"ok": True}))
+
+    request_json(transport, "POST", URL, data=b"fields name;", content_type="text/plain")
+
+    sent = transport.calls[0]
+    assert sent["headers"]["Content-Type"] == "text/plain"
+    assert sent["body"] == "fields name;"
+
+
+def test_a_json_body_and_a_raw_body_cannot_be_combined() -> None:
+    with pytest.raises(ValueError, match="either"):
+        request_json(FakeTransport(ok()), "POST", URL, json_body={"a": 1}, data=b"x")

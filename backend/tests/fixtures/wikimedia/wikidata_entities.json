@@ -1,0 +1,8 @@
+{
+  "entities": {
+    "Q900001": {"type": "item", "id": "Q900001", "sitelinks": {"enwiki": {"site": "enwiki", "title": "The Rainy Hour"}}},
+    "Q900002": {"type": "item", "id": "Q900002", "sitelinks": {}},
+    "Q900003": {"type": "item", "id": "Q900003", "sitelinks": {"enwiki": {"site": "enwiki", "title": "old name"}}}
+  },
+  "success": 1
+}
