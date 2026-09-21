@@ -106,6 +106,32 @@ class RoutingTransport:
         return outcome
 
 
+class ScriptedTransport:
+    """Answers each request with `handler(method, url, headers, body)`; records every call."""
+
+    def __init__(
+        self,
+        handler: Callable[[str, str, dict[str, str], str], HttpResponse | Exception],
+    ) -> None:
+        self._handler = handler
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes | None,
+        timeout: float,
+    ) -> HttpResponse:
+        text = body.decode() if body else ""
+        self.calls.append({"method": method, "url": url, "headers": dict(headers), "body": text})
+        outcome = self._handler(method, url, dict(headers), text)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 class CountingThrottle(Throttle):
     """A throttle that never sleeps and only counts how often it was asked to wait."""
 

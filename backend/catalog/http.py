@@ -87,6 +87,8 @@ def request_json(
     *,
     headers: Mapping[str, str] | None = None,
     json_body: Any = None,
+    data: bytes | None = None,
+    content_type: str = "application/json",
     timeout: float = 30.0,
     retry: RetryPolicy | None = None,
     is_retryable: Callable[[HttpResponse], bool] | None = None,
@@ -99,14 +101,16 @@ def request_json(
     (the Retry-After header, or whatever `retry_after_of` extracts, such as a delay in the body)
     longer than `retry.max_delay` is not waited out: the error is raised at once so the caller can
     stop (for example, a daily quota) instead of blocking. A 2xx body that is not valid JSON raises
-    ValueError.
+    ValueError. `data` sends a raw body (for example a form or a plain-text query) instead of JSON.
     """
     retry = retry or RetryPolicy()
+    if json_body is not None and data is not None:
+        raise ValueError("Pass either json_body or data, not both")
     request_headers = {"Accept": "application/json", **(headers or {})}
-    data: bytes | None = None
     if json_body is not None:
         data = json.dumps(json_body).encode("utf-8")
-        request_headers["Content-Type"] = "application/json"
+    if data is not None:
+        request_headers["Content-Type"] = content_type
 
     def retryable(response: HttpResponse) -> bool:
         if is_retryable is not None:

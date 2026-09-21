@@ -146,7 +146,7 @@ def upsert_film(record: FilmRecord) -> Outcome:
     return upsert_item(record.to_item_record(SOURCE))
 
 
-class _FilmItems:
+class FilmItems:
     """Presents a film source as a generic item source."""
 
     def __init__(self, source: FilmSource) -> None:
@@ -167,7 +167,7 @@ def ingest_films(
     progress: Callable[[IngestStats], None] | None = None,
 ) -> IngestStats:
     return ingest_items(
-        _FilmItems(source), limit=limit, mid_tail_percent=mid_tail_percent, progress=progress
+        FilmItems(source), limit=limit, mid_tail_percent=mid_tail_percent, progress=progress
     )
 
 
