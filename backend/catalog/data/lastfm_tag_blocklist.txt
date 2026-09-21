@@ -1,0 +1,27 @@
+# Last.fm tags that describe the listener, not the music. They are dropped from an album's tags
+# before embedding. One per line, compared case-insensitively.
+seen live
+favorites
+favourites
+favorite
+favourite
+favorite albums
+favourite albums
+albums i own
+i own
+own it
+owned
+my collection
+my music
+my favorites
+my favourites
+spotify
+check out
+to buy
+wishlist
+love at first listen
+under 2000 listeners
+male vocalists
+female vocalists
+albums
+album

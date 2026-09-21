@@ -7,7 +7,7 @@ from django.db import transaction
 from django.db.models import Min
 
 from catalog.models import ExternalId, Item, Score
-from catalog.sources.base import FilmRecord, FilmSource, ItemRecord, ItemSource
+from catalog.sources.base import FilmRecord, FilmSource, ItemRecord, ItemSource, TargetAware
 from catalog.text import build_combined_text
 
 SOURCE = "tmdb"
@@ -116,10 +116,13 @@ def ingest_items(
     mid_target = round(limit * mid_tail_percent / 100)
     stats = IngestStats()
     seen: set[tuple[str, str]] = set()
-    for stream, target in (
-        (source.popular(), limit - mid_target),
-        (source.mid_tail(), mid_target),
+    for open_stream, target in (
+        (source.popular, limit - mid_target),
+        (source.mid_tail, mid_target),
     ):
+        if isinstance(source, TargetAware):
+            source.set_target(target)
+        stream = open_stream()
         taken = 0
         while taken < target:
             record = next(stream, None)

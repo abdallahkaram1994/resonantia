@@ -36,4 +36,12 @@ def mid_tail_band_is_below_the_popularity_threshold(app_configs, **kwargs):
                 id="catalog.E003",
             )
         )
+    if settings.ALBUM_MID_TAIL_MIN_LISTENERS >= settings.ALBUM_MIN_LISTENERS:
+        errors.append(
+            checks.Error(
+                "ALBUM_MID_TAIL_MIN_LISTENERS must be lower than ALBUM_MIN_LISTENERS, "
+                "otherwise the mid-tail band is empty.",
+                id="catalog.E004",
+            )
+        )
     return errors
