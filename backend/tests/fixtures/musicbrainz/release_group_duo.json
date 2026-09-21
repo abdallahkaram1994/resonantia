@@ -1,0 +1,11 @@
+{
+  "id": "eeeeeeee-5555-4555-8555-eeeeeeeeeeee",
+  "title": "Two Voices",
+  "primary-type": "Album",
+  "secondary-types": [],
+  "first-release-date": "1969",
+  "artist-credit": [
+    {"name": "Simon Example", "joinphrase": " & "},
+    {"name": "Garfield Sample", "joinphrase": ""}
+  ]
+}

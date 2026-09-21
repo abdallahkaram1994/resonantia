@@ -101,6 +101,26 @@ class ExternalId(models.Model):
         return f"{self.source}:{self.external_id}"
 
 
+class SkippedRecord(models.Model):
+    """A source record that was checked and rejected (for example a live album), remembered so a
+    re-run does not repeat the expensive lookups. Retry them with --retry-skipped."""
+
+    source = models.CharField(max_length=50)
+    external_id = models.CharField(max_length=100)
+    reason = models.CharField(max_length=50)
+    checked_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source", "external_id"], name="skippedrecord_source_external_id_uniq"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.source}:{self.external_id} ({self.reason})"
+
+
 class Score(models.Model):
     """Display-only. Scores are never embedded and never affect ranking."""
 

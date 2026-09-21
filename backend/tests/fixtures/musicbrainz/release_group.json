@@ -1,0 +1,17 @@
+{
+  "id": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+  "title": "The Rainy Hour",
+  "primary-type": "Album",
+  "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+  "secondary-types": [],
+  "secondary-type-ids": [],
+  "first-release-date": "1997-05-21",
+  "disambiguation": "",
+  "artist-credit": [
+    {"name": "Fixture Band", "joinphrase": "", "artist": {"id": "cccccccc-3333-4333-8333-cccccccccccc", "name": "Fixture Band"}}
+  ],
+  "relations": [
+    {"type": "discogs", "url": {"resource": "https://www.discogs.com/master/1"}},
+    {"type": "wikidata", "url": {"resource": "https://www.wikidata.org/wiki/Q900001"}}
+  ]
+}

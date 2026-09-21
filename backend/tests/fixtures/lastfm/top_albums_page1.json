@@ -1,0 +1,14 @@
+{
+  "albums": {
+    "album": [
+      {"name": "The Rainy Hour", "mbid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", "url": "https://www.last.fm/music/Fixture+Band/The+Rainy+Hour",
+       "artist": {"name": "Fixture Band", "mbid": "cccccccc-3333-4333-8333-cccccccccccc", "url": "https://www.last.fm/music/Fixture+Band"},
+       "image": [{"#text": "https://example.test/s.png", "size": "small"}], "@attr": {"rank": "1"}},
+      {"name": "No Id Album", "mbid": "", "url": "https://www.last.fm/music/Other/No+Id",
+       "artist": {"name": "Other Artist", "mbid": "", "url": "https://www.last.fm/music/Other"}, "@attr": {"rank": "2"}},
+      {"name": "Second Record", "mbid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", "url": "https://www.last.fm/music/Fixture+Band/Second+Record",
+       "artist": {"name": "Fixture Band", "mbid": "cccccccc-3333-4333-8333-cccccccccccc", "url": "https://www.last.fm/music/Fixture+Band"}, "@attr": {"rank": "3"}}
+    ],
+    "@attr": {"tag": "rock", "page": "1", "perPage": "50", "totalPages": "40", "total": "2000"}
+  }
+}

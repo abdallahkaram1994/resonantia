@@ -52,7 +52,16 @@ class RetryPolicy:
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
-def urllib_transport(
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None  # report the 3xx as it is instead of following it
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _send(
+    open_url: Callable[..., Any],
     method: str,
     url: str,
     headers: Mapping[str, str],
@@ -61,12 +70,33 @@ def urllib_transport(
 ) -> HttpResponse:
     request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open_url(request, timeout=timeout) as response:
             return HttpResponse(response.status, dict(response.headers), response.read())
     except urllib.error.HTTPError as error:
         return HttpResponse(error.code, dict(error.headers), error.read())
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise NetworkError(type(error).__name__) from error
+
+
+def urllib_transport(
+    method: str,
+    url: str,
+    headers: Mapping[str, str],
+    body: bytes | None,
+    timeout: float,
+) -> HttpResponse:
+    return _send(urllib.request.urlopen, method, url, headers, body, timeout)
+
+
+def urllib_transport_no_redirect(
+    method: str,
+    url: str,
+    headers: Mapping[str, str],
+    body: bytes | None,
+    timeout: float,
+) -> HttpResponse:
+    """Like urllib_transport, but a 3xx answer is returned as it is, not followed."""
+    return _send(_NO_REDIRECT_OPENER.open, method, url, headers, body, timeout)
 
 
 def parse_retry_after(headers: Mapping[str, str]) -> float | None:
@@ -87,6 +117,8 @@ def request_json(
     *,
     headers: Mapping[str, str] | None = None,
     json_body: Any = None,
+    data: bytes | None = None,
+    content_type: str = "application/json",
     timeout: float = 30.0,
     retry: RetryPolicy | None = None,
     is_retryable: Callable[[HttpResponse], bool] | None = None,
@@ -99,14 +131,16 @@ def request_json(
     (the Retry-After header, or whatever `retry_after_of` extracts, such as a delay in the body)
     longer than `retry.max_delay` is not waited out: the error is raised at once so the caller can
     stop (for example, a daily quota) instead of blocking. A 2xx body that is not valid JSON raises
-    ValueError.
+    ValueError. `data` sends a raw body (for example a form or a plain-text query) instead of JSON.
     """
     retry = retry or RetryPolicy()
+    if json_body is not None and data is not None:
+        raise ValueError("Pass either json_body or data, not both")
     request_headers = {"Accept": "application/json", **(headers or {})}
-    data: bytes | None = None
     if json_body is not None:
         data = json.dumps(json_body).encode("utf-8")
-        request_headers["Content-Type"] = "application/json"
+    if data is not None:
+        request_headers["Content-Type"] = content_type
 
     def retryable(response: HttpResponse) -> bool:
         if is_retryable is not None:
