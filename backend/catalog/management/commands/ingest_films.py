@@ -39,7 +39,7 @@ class Command(BaseCommand):
             stats = ingest_films(
                 source,
                 limit=limit,
-                mid_tail_percent=settings.FILM_MID_TAIL_PERCENT,
+                mid_tail_percent=settings.MID_TAIL_PERCENT,
                 progress=progress,
             )
         except SourceError as error:

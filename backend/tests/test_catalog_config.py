@@ -39,7 +39,7 @@ def test_film_settings_have_sensible_defaults() -> None:
         "TMDB_MAX_CACHE_DAYS": "150",
         "FILM_MIN_VOTE_COUNT": "1000",
         "FILM_MID_TAIL_MIN_VOTE_COUNT": "200",
-        "FILM_MID_TAIL_PERCENT": "10",
+        "MID_TAIL_PERCENT": "10",
         "CATALOG_TARGET_PER_TYPE": "2000",
         "INGEST_LIMIT": "0",
         "TMDB_IMAGE_BASE_URL": "https://image.tmdb.org/t/p/w342",
@@ -53,8 +53,8 @@ def test_film_settings_have_sensible_defaults() -> None:
 @pytest.mark.parametrize(
     ("name", "bad"),
     [
-        ("FILM_MID_TAIL_PERCENT", "101"),
-        ("FILM_MID_TAIL_PERCENT", "-1"),
+        ("MID_TAIL_PERCENT", "101"),
+        ("MID_TAIL_PERCENT", "-1"),
         ("TMDB_REQUESTS_PER_SECOND", "0"),
         ("CATALOG_TARGET_PER_TYPE", "lots"),
         ("INGEST_LIMIT", "-5"),
@@ -68,7 +68,7 @@ def test_settings_reject_out_of_range_values(name: str, bad: str) -> None:
 
 
 def test_zero_is_allowed_for_the_ingest_limit_and_mid_tail_percent() -> None:
-    for name in ("INGEST_LIMIT", "FILM_MID_TAIL_PERCENT"):
+    for name in ("INGEST_LIMIT", "MID_TAIL_PERCENT"):
         result = load_settings_value(name, {name: "0"})
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "0"

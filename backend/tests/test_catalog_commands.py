@@ -25,7 +25,7 @@ def run(command: str, *args: str) -> tuple[str, str]:
     return out.getvalue(), err.getvalue()
 
 
-@override_settings(FILM_MID_TAIL_PERCENT=0, INGEST_LIMIT=0)
+@override_settings(MID_TAIL_PERCENT=0, INGEST_LIMIT=0)
 def test_ingest_reports_what_it_did_and_points_to_the_next_step() -> None:
     source = FakeFilmSource(
         popular=[make_record(i, fetched_at=datetime.now(UTC)) for i in (1, 2, 3)]
@@ -40,7 +40,7 @@ def test_ingest_reports_what_it_did_and_points_to_the_next_step() -> None:
     assert err == ""
 
 
-@override_settings(FILM_MID_TAIL_PERCENT=0, INGEST_LIMIT=2, CATALOG_TARGET_PER_TYPE=50)
+@override_settings(MID_TAIL_PERCENT=0, INGEST_LIMIT=2, CATALOG_TARGET_PER_TYPE=50)
 def test_ingest_limit_comes_from_the_flag_then_the_env_setting_then_the_target() -> None:
     def ingested(*args: str) -> int:
         Item.objects.all().delete()
@@ -67,7 +67,7 @@ def test_ingest_needs_a_token() -> None:
         run("ingest_films")
 
 
-@override_settings(FILM_MID_TAIL_PERCENT=0)
+@override_settings(MID_TAIL_PERCENT=0)
 def test_a_source_failure_keeps_earlier_films_and_says_how_to_continue() -> None:
     class Failing:
         def popular_films(self) -> Iterator[FilmRecord]:
@@ -86,7 +86,7 @@ def test_a_source_failure_keeps_earlier_films_and_says_how_to_continue() -> None
     assert Item.objects.count() == 2
 
 
-@override_settings(FILM_MID_TAIL_PERCENT=0, TMDB_MAX_CACHE_DAYS=150)
+@override_settings(MID_TAIL_PERCENT=0, TMDB_MAX_CACHE_DAYS=150)
 def test_ingest_warns_when_catalog_data_is_past_the_refresh_window() -> None:
     old = datetime.now(UTC) - timedelta(days=200)
     source = FakeFilmSource(popular=[make_record(1, fetched_at=old)])

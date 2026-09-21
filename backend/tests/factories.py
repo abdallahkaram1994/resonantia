@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 from catalog.embedding.base import EmbeddingError, EmbedKind
 from catalog.models import EMBEDDING_DIMENSIONS
-from catalog.sources.base import FilmRecord
+from catalog.sources.base import FilmRecord, ItemRecord, ScoreRecord
 
 NOW = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
 
@@ -27,6 +27,48 @@ def make_record(source_id: int = 1, **overrides: object) -> FilmRecord:
     }
     values.update(overrides)
     return FilmRecord(**values)  # type: ignore[arg-type]
+
+
+def make_item_record(source_id: str = "1", **overrides: object) -> ItemRecord:
+    """A game-shaped record by default; override fields (or media_type and source) as needed."""
+    values: dict[str, object] = {
+        "media_type": "game",
+        "source": "igdb",
+        "source_id": source_id,
+        "title": f"Game {source_id}",
+        "release_year": 2015,
+        "summary": f"Summary of game {source_id}.",
+        "genres": ("Role-playing (RPG)",),
+        "keywords": ("open world",),
+        "cover_url": f"https://images.igdb.com/igdb/image/upload/t_cover_big/co{source_id}.jpg",
+        "details": {"platforms": ["PC"]},
+        "fetched_at": NOW,
+        "score": ScoreRecord("igdb", 84.2, 1500),
+    }
+    values.update(overrides)
+    return ItemRecord(**values)  # type: ignore[arg-type]
+
+
+class FakeItemSource:
+    """Yields the given item records lazily and counts how many were actually pulled."""
+
+    def __init__(
+        self, popular: Iterable[ItemRecord] = (), mid_tail: Iterable[ItemRecord] = ()
+    ) -> None:
+        self._popular = list(popular)
+        self._mid_tail = list(mid_tail)
+        self.popular_pulled = 0
+        self.mid_tail_pulled = 0
+
+    def popular(self) -> Iterator[ItemRecord]:
+        for record in self._popular:
+            self.popular_pulled += 1
+            yield record
+
+    def mid_tail(self) -> Iterator[ItemRecord]:
+        for record in self._mid_tail:
+            self.mid_tail_pulled += 1
+            yield record
 
 
 class FakeFilmSource:

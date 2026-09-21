@@ -98,7 +98,7 @@ TMDB_MAX_CACHE_DAYS = env_int("TMDB_MAX_CACHE_DAYS", 150)
 # mid-tail slice so results can surprise. Vote counts pick films; they never affect ranking.
 FILM_MIN_VOTE_COUNT = env_int("FILM_MIN_VOTE_COUNT", 1000)
 FILM_MID_TAIL_MIN_VOTE_COUNT = env_int("FILM_MID_TAIL_MIN_VOTE_COUNT", 200)
-FILM_MID_TAIL_PERCENT = env_int("FILM_MID_TAIL_PERCENT", 10, minimum=0, maximum=100)
+MID_TAIL_PERCENT = env_int("MID_TAIL_PERCENT", 10, minimum=0, maximum=100)
 CATALOG_TARGET_PER_TYPE = env_int("CATALOG_TARGET_PER_TYPE", 2000)
 # Cap for sample runs (for example 50). 0 means use CATALOG_TARGET_PER_TYPE.
 INGEST_LIMIT = env_int("INGEST_LIMIT", 0, minimum=0)
