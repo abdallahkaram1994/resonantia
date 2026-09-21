@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -6,8 +6,8 @@ from typing import Literal
 from django.db import transaction
 from django.db.models import Min
 
-from catalog.models import ExternalId, Item, MediaType, Score
-from catalog.sources.base import FilmRecord, FilmSource
+from catalog.models import ExternalId, Item, Score
+from catalog.sources.base import FilmRecord, FilmSource, ItemRecord, ItemSource
 from catalog.text import build_combined_text
 
 SOURCE = "tmdb"
@@ -29,33 +29,39 @@ class IngestStats:
         return self.created + self.updated + self.unchanged
 
 
-def upsert_film(record: FilmRecord) -> Outcome:
-    """Create or refresh one film. A changed combined text clears its stale embedding."""
+def _link_extra_ids(item: Item, record: ItemRecord) -> None:
+    """Best effort: an id already attached to a different item is left alone, not stolen."""
+    for source, external_id in record.extra_ids:
+        existing = ExternalId.objects.filter(source=source, external_id=external_id).first()
+        if existing is None:
+            ExternalId.objects.create(item=item, source=source, external_id=external_id)
+
+
+def upsert_item(record: ItemRecord) -> Outcome:
+    """Create or refresh one item. A changed combined text clears its stale embedding."""
     fetched_at = record.fetched_at.astimezone(UTC).isoformat()
     fields = {
         "title": record.title,
         "release_year": record.release_year,
         "cover_url": record.cover_url,
-        "summary": record.overview,
-        "details": {
-            "original_title": record.original_title,
-            "original_language": record.original_language,
-            "runtime": record.runtime,
-            "tagline": record.tagline,
-            "genres": list(record.genres),
-            "keywords": list(record.keywords),
-        },
+        "summary": record.summary,
+        "details": dict(record.details),
     }
     combined_text = build_combined_text(
-        record.title, record.genres, record.keywords, record.overview
+        record.title,
+        record.genres,
+        record.keywords,
+        record.summary,
+        byline=record.byline,
+        keywords_label=record.keywords_label,
     )
     with transaction.atomic():
         external = (
             ExternalId.objects.select_related("item")
-            .filter(source=SOURCE, external_id=str(record.source_id))
+            .filter(source=record.source, external_id=record.source_id)
             .first()
         )
-        item = external.item if external else Item(media_type=MediaType.FILM)
+        item = external.item if external else Item(media_type=record.media_type)
         if external is None:
             outcome: Outcome = "created"
         elif item.combined_text == combined_text and all(
@@ -69,25 +75,88 @@ def upsert_film(record: FilmRecord) -> Outcome:
             setattr(item, name, value)
         item.set_combined_text(combined_text)
         item.provenance = {
-            name: {"source": SOURCE, "fetched_at": fetched_at} for name in SOURCED_FIELDS
+            name: {
+                "source": record.field_sources.get(name, record.source),
+                "fetched_at": fetched_at,
+            }
+            for name in SOURCED_FIELDS
         }
         item.save()
         if external is None:
-            ExternalId.objects.create(item=item, source=SOURCE, external_id=str(record.source_id))
+            ExternalId.objects.create(item=item, source=record.source, external_id=record.source_id)
+        _link_extra_ids(item, record)
 
-        if record.vote_average is None:
-            Score.objects.filter(item=item, source=SOURCE).delete()
+        if record.score is None:
+            Score.objects.filter(item=item, source=record.source).delete()
         else:
             Score.objects.update_or_create(
                 item=item,
-                source=SOURCE,
+                source=record.score.source,
                 defaults={
-                    "value": record.vote_average,
-                    "vote_count": record.vote_count,
+                    "value": record.score.value,
+                    "vote_count": record.score.vote_count,
                     "fetched_at": record.fetched_at,
                 },
             )
     return outcome
+
+
+def ingest_items(
+    source: ItemSource,
+    *,
+    limit: int,
+    mid_tail_percent: int,
+    progress: Callable[[IngestStats], None] | None = None,
+) -> IngestStats:
+    """Ingest up to `limit` embeddable items: popular ones first, then a mid-tail slice.
+
+    Items that fail the minimum-metadata rule are skipped and do not count toward the limit.
+    Each item is committed on its own, so an interrupted run keeps its progress.
+    """
+    mid_target = round(limit * mid_tail_percent / 100)
+    stats = IngestStats()
+    seen: set[tuple[str, str]] = set()
+    for stream, target in (
+        (source.popular(), limit - mid_target),
+        (source.mid_tail(), mid_target),
+    ):
+        taken = 0
+        while taken < target:
+            record = next(stream, None)
+            if record is None:
+                break
+            key = (record.source, record.source_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            if not record.is_embeddable:
+                stats.skipped_not_embeddable += 1
+                continue
+            outcome = upsert_item(record)
+            setattr(stats, outcome, getattr(stats, outcome) + 1)
+            if record.keywords:
+                stats.with_keywords += 1
+            taken += 1
+            if progress:
+                progress(stats)
+    return stats
+
+
+def upsert_film(record: FilmRecord) -> Outcome:
+    return upsert_item(record.to_item_record(SOURCE))
+
+
+class _FilmItems:
+    """Presents a film source as a generic item source."""
+
+    def __init__(self, source: FilmSource) -> None:
+        self._source = source
+
+    def popular(self) -> Iterator[ItemRecord]:
+        return (film.to_item_record(SOURCE) for film in self._source.popular_films())
+
+    def mid_tail(self) -> Iterator[ItemRecord]:
+        return (film.to_item_record(SOURCE) for film in self._source.mid_tail_films())
 
 
 def ingest_films(
@@ -97,37 +166,9 @@ def ingest_films(
     mid_tail_percent: int,
     progress: Callable[[IngestStats], None] | None = None,
 ) -> IngestStats:
-    """Ingest up to `limit` embeddable films: popular ones first, then a mid-tail slice.
-
-    Films that fail the minimum-metadata rule are skipped and do not count toward the limit.
-    Each film is committed on its own, so an interrupted run keeps its progress.
-    """
-    mid_target = round(limit * mid_tail_percent / 100)
-    stats = IngestStats()
-    seen: set[int] = set()
-    for stream, target in (
-        (source.popular_films(), limit - mid_target),
-        (source.mid_tail_films(), mid_target),
-    ):
-        taken = 0
-        while taken < target:
-            record = next(stream, None)
-            if record is None:
-                break
-            if record.source_id in seen:
-                continue
-            seen.add(record.source_id)
-            if not record.is_embeddable:
-                stats.skipped_not_embeddable += 1
-                continue
-            outcome = upsert_film(record)
-            setattr(stats, outcome, getattr(stats, outcome) + 1)
-            if record.keywords:
-                stats.with_keywords += 1
-            taken += 1
-            if progress:
-                progress(stats)
-    return stats
+    return ingest_items(
+        _FilmItems(source), limit=limit, mid_tail_percent=mid_tail_percent, progress=progress
+    )
 
 
 def oldest_tmdb_fetch() -> datetime | None:
