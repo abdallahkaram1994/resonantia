@@ -35,6 +35,29 @@ test("an /item/<id> url renders the item detail page, not the search page", asyn
   expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
 });
 
+test("an /item/<id>?q=... url still renders the item detail page, not search", async () => {
+  // Regression: the item-path regex originally required a `/` or end-of-string right after the
+  // id, so a result card's own `?q=` link (added for match explanations) failed to match at all,
+  // silently falling through to the search page instead.
+  window.history.replaceState(null, "", "/item/5?q=a+rainy+night+drive");
+  const fetchMock = stubFetch((url) =>
+    Promise.resolve(
+      url.includes("/similar/")
+        ? jsonResponse({ groups: [] })
+        : jsonResponse(rawItemDetail({ id: 5, title: "The Detail Item" })),
+    ),
+  );
+
+  render(<App />);
+
+  expect(await screen.findByRole("heading", { name: "The Detail Item" })).toBeInTheDocument();
+  expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+  const detailCall = fetchMock.mock.calls.find((c) => !String(c[0]).includes("/similar/"));
+  expect(new URL(String(detailCall?.[0]), "http://localhost").searchParams.get("q")).toBe(
+    "a rainy night drive",
+  );
+});
+
 test("any other path renders the search page", () => {
   window.history.replaceState(null, "", "/search?q=rain");
 
