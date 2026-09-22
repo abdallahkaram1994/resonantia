@@ -17,7 +17,7 @@ test("the query is URL-encoded", async () => {
 
   await search("a b&c=d/é #1");
 
-  expect(fetchMock).toHaveBeenCalledWith("/api/search/?q=a%20b%26c%3Dd%2F%C3%A9%20%231", {
+  expect(fetchMock).toHaveBeenCalledWith("/api/search/?q=a%20b%26c%3Dd%2F%C3%A9%20%231&types=film", {
     signal: undefined,
   });
 });

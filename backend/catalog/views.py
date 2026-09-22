@@ -11,15 +11,14 @@ from rest_framework.response import Response
 from catalog.embedding.base import EmbeddingError, EmbeddingRateLimited
 from catalog.embedding.factory import get_embedder
 from catalog.filters import FilterError, parse_filters, parse_media_types
+from catalog.layout import GROUPED, build_layout
 from catalog.models import MediaType
-from catalog.search import embed_query, normalize_query, retrieve_by_type
+from catalog.search import SearchHit, embed_query, normalize_query, retrieve_by_type
 
 logger = logging.getLogger(__name__)
 
-# Types searched when the request does not choose (`types=`). This becomes all three when the
-# hybrid layout lands (M4 slice 3): until then a mixed list would be ordered by raw scores, which
-# are not comparable across types.
-DEFAULT_MEDIA_TYPES = (MediaType.FILM,)
+# Types searched when the request does not choose (`types=`): all of them.
+DEFAULT_MEDIA_TYPES = tuple(MediaType.values)
 
 
 def _unavailable(retry_after: float | None = None) -> Response:
@@ -30,6 +29,17 @@ def _unavailable(retry_after: float | None = None) -> Response:
     if retry_after is not None and retry_after > 0:
         response["Retry-After"] = str(math.ceil(retry_after))
     return response
+
+
+def _result(hit: SearchHit) -> dict[str, object]:
+    return {
+        "id": hit.item.id,
+        "media_type": hit.item.media_type,
+        "title": hit.item.title,
+        "release_year": hit.item.release_year,
+        "cover_url": hit.item.cover_url,
+        "score": round(hit.score, 4),
+    }
 
 
 @api_view(["GET"])
@@ -68,32 +78,33 @@ def search(request: Request) -> Response:
         logger.warning("Embedding failed during search (%s): %s", type(error).__name__, error)
         return _unavailable()
 
-    limit = settings.SEARCH_RESULT_LIMIT
     pools = retrieve_by_type(
         vector,
         media_types=media_types,
         filters=filters,
         model=embedder.model,
         dim=embedder.dimensions,
-        limit=limit,
+        limit=settings.SEARCH_CANDIDATES_PER_TYPE,
     )
-    # Interim: one list ordered by raw score. The layout slice replaces this merge.
-    hits = sorted(
-        (hit for pool in pools.values() for hit in pool), key=lambda hit: (-hit.score, hit.item.id)
-    )[:limit]
-    return Response(
-        {
-            "query": query,
-            "results": [
-                {
-                    "id": hit.item.id,
-                    "media_type": hit.item.media_type,
-                    "title": hit.item.title,
-                    "release_year": hit.item.release_year,
-                    "cover_url": hit.item.cover_url,
-                    "score": round(hit.score, 4),
-                }
-                for hit in hits
-            ],
-        }
+    # No media type hint yet: the LLM parse that names one arrives in M5.
+    layout = build_layout(
+        pools,
+        hint=None,
+        result_limit=settings.SEARCH_RESULT_LIMIT,
+        group_limit=settings.SEARCH_GROUP_LIMIT,
+        min_slots=settings.SEARCH_BLEND_MIN_SLOTS,
     )
+    body: dict[str, object] = {
+        "query": query,
+        "layout": layout.kind,
+        "mode": "vibe",
+        "notices": layout.notices,
+    }
+    if layout.kind == GROUPED:
+        body["groups"] = [
+            {"media_type": media_type, "results": [_result(hit) for hit in hits]}
+            for media_type, hits in layout.groups
+        ]
+    else:
+        body["results"] = [_result(hit) for hit in layout.hits]
+    return Response(body)

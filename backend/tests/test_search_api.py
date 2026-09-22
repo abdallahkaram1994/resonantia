@@ -88,7 +88,13 @@ def test_an_empty_catalog_returns_an_empty_list(client: Client) -> None:
     response = search(client, "anything")
 
     assert response.status_code == 200
-    assert response.json() == {"query": "anything", "results": []}
+    assert response.json() == {
+        "query": "anything",
+        "layout": "blended",
+        "mode": "vibe",
+        "notices": [],
+        "results": [],
+    }
 
 
 def test_films_without_a_release_year_are_included(client: Client) -> None:
@@ -122,7 +128,7 @@ def test_a_closer_item_of_another_media_type_never_appears(client: Client) -> No
     add_item("The Game", vec(1.0), media_type=MediaType.GAME)
     add_item("The Album", vec(1.0), media_type=MediaType.ALBUM)
 
-    assert titles(search(client, "x")) == ["The Film"]
+    assert titles(search(client, "x", types="film")) == ["The Film"]
 
 
 def test_vectors_from_another_model_or_dimension_are_never_compared(client: Client) -> None:
@@ -277,10 +283,10 @@ def add_one_of_each(year: int | None = 2001) -> None:
     add_item("The Album", vec(1.0), media_type=MediaType.ALBUM, year=year)
 
 
-def test_films_are_searched_when_no_types_are_chosen(client: Client) -> None:
+def test_every_type_is_searched_when_no_types_are_chosen(client: Client) -> None:
     add_one_of_each()
 
-    assert titles(search(client, "x")) == ["The Film"]
+    assert set(titles(search(client, "x"))) == {"The Film", "The Game", "The Album"}
 
 
 @pytest.mark.parametrize(
@@ -383,3 +389,181 @@ def test_filters_leave_the_query_embedding_alone(client: Client) -> None:
     search(client, "Rainy Night", embedder, types="game", eras="1980-1989")
 
     assert embedder.calls == [(["rainy night"], "query")]
+
+
+# --- layout ---------------------------------------------------------------------------------------
+
+
+def test_one_chosen_type_is_a_single_list(client: Client) -> None:
+    add_one_of_each()
+
+    body = search(client, "x", types="game").json()
+
+    assert body["layout"] == "single"
+    assert body["mode"] == "vibe"
+    assert body["notices"] == []
+    assert [r["title"] for r in body["results"]] == ["The Game"]
+    assert "groups" not in body
+
+
+def test_several_types_without_a_named_type_are_blended(client: Client) -> None:
+    add_one_of_each()
+
+    body = search(client, "x").json()
+
+    assert body["layout"] == "blended"
+    assert {r["media_type"] for r in body["results"]} == {"film", "game", "album"}
+    assert "groups" not in body
+
+
+def test_a_blended_list_keeps_every_type_even_when_one_type_scores_far_higher(
+    client: Client,
+) -> None:
+    for i in range(20):
+        add_item(f"Film {i:02d}", vec(1.0, i * 0.001))  # very close to the query
+    for i in range(4):
+        add_item(f"Game {i}", vec(1.0, 1.0 + i), media_type=MediaType.GAME)  # much further away
+        add_item(f"Album {i}", vec(1.0, 2.0 + i), media_type=MediaType.ALBUM)
+
+    body = search(client, "x").json()
+
+    kinds = [r["media_type"] for r in body["results"]]
+    assert len(kinds) == 15
+    assert kinds.count("game") >= 2
+    assert kinds.count("album") >= 2
+
+
+def test_a_standout_match_beats_higher_raw_scores_from_a_type_that_is_close_to_everything(
+    client: Client,
+) -> None:
+    import math
+
+    def at(degrees: float) -> list[float]:
+        radians = math.radians(degrees)
+        return vec(math.cos(radians), math.sin(radians))
+
+    for i in range(20):  # every film is fairly close to the query, so none stands out much
+        add_item(f"Film {i:02d}", at(10 + i * 0.5))
+    add_item("Standout album", at(35), media_type=MediaType.ALBUM)  # raw 0.82: below every film
+    for i in range(20):  # the other albums are far away
+        add_item(f"Album {i:02d}", at(80 + i * 0.4), media_type=MediaType.ALBUM)
+
+    body = search(client, "x").json()
+
+    assert body["results"][0]["title"] == "Standout album"
+    raw = {r["title"]: r["score"] for r in body["results"]}
+    assert raw["Standout album"] < min(v for t, v in raw.items() if t.startswith("Film"))
+
+
+def test_the_blend_reserve_and_sizes_are_configurable(client: Client) -> None:
+    for i in range(10):
+        add_item(f"Film {i}", vec(1.0, i * 0.001))
+        add_item(f"Game {i}", vec(1.0, 3.0 + i), media_type=MediaType.GAME)
+
+    with override_settings(SEARCH_RESULT_LIMIT=8, SEARCH_BLEND_MIN_SLOTS=4):
+        kinds = [r["media_type"] for r in search(client, "x").json()["results"]]
+
+    assert len(kinds) == 8
+    assert kinds.count("game") >= 4
+    with override_settings(SEARCH_CANDIDATES_PER_TYPE=50, SEARCH_RESULT_LIMIT=3):
+        assert len(search(client, "x", types="film").json()["results"]) == 3
+
+
+def test_a_blended_list_applies_each_types_filters_within_its_own_pool(client: Client) -> None:
+    for media_type in (MediaType.FILM, MediaType.GAME, MediaType.ALBUM):
+        add_item(f"Old {media_type}", vec(1.0), media_type=media_type, year=1975)
+        add_item(f"New {media_type}", vec(1.0, 1.0), media_type=media_type, year=1985)
+        add_item(f"Undated {media_type}", vec(1.0), media_type=media_type, year=None)
+
+    body = search(client, "x", eras="1980-1989").json()
+
+    assert {r["title"] for r in body["results"]} == {"New film", "New game", "New album"}
+
+
+def test_the_layout_only_ever_sees_the_candidate_pool(client: Client) -> None:
+    for i in range(20):
+        add_item(f"Film {i:02d}", vec(1.0, i * 0.01))
+
+    # The startup check refuses a pool smaller than the lists, so this shows why it matters.
+    with override_settings(SEARCH_CANDIDATES_PER_TYPE=5, SEARCH_RESULT_LIMIT=15):
+        results = search(client, "x", types="film").json()["results"]
+
+    assert [r["title"] for r in results] == [f"Film {i:02d}" for i in range(5)]
+
+
+def test_the_result_keeps_its_display_fields_in_every_layout(client: Client) -> None:
+    add_one_of_each()
+    fields = {"id", "media_type", "title", "release_year", "cover_url", "score"}
+
+    for params in ({"types": "film"}, {}):
+        body = search(client, "x", **params).json()
+        assert set(body["results"][0]) == fields
+
+
+def named(media_type: str):
+    """Make the layout see a query that names `media_type`, as the LLM parse will in M5."""
+    from catalog.layout import build_layout
+
+    def with_hint(pools, **kwargs):
+        return build_layout(pools, **{**kwargs, "hint": media_type})
+
+    return mock.patch("catalog.views.build_layout", side_effect=with_hint)
+
+
+def test_a_query_that_names_a_type_is_grouped_with_that_type_first(client: Client) -> None:
+    add_one_of_each()
+
+    with named("album"):
+        body = search(client, "x").json()
+
+    assert body["layout"] == "grouped"
+    assert "results" not in body
+    assert [g["media_type"] for g in body["groups"]] == ["album", "film", "game"]
+    assert [[r["title"] for r in g["results"]] for g in body["groups"]] == [
+        ["The Album"],
+        ["The Film"],
+        ["The Game"],
+    ]
+
+
+def test_a_group_with_no_matches_is_still_listed(client: Client) -> None:
+    add_item("The Film", vec(1.0))
+
+    with named("game"):
+        body = search(client, "x", types="film,game").json()
+
+    assert [(g["media_type"], len(g["results"])) for g in body["groups"]] == [
+        ("game", 0),
+        ("film", 1),
+    ]
+
+
+def test_groups_hold_at_most_the_group_limit(client: Client) -> None:
+    for i in range(6):
+        add_item(f"Film {i}", vec(1.0, i * 0.01))
+        add_item(f"Game {i}", vec(1.0, i * 0.01), media_type=MediaType.GAME)
+
+    with named("film"), override_settings(SEARCH_GROUP_LIMIT=4):
+        body = search(client, "x", types="film,game").json()
+
+    assert [len(g["results"]) for g in body["groups"]] == [4, 4]
+
+
+def test_the_toggle_wins_over_a_named_type_with_a_notice(client: Client) -> None:
+    add_one_of_each()
+
+    with named("game"):
+        body = search(client, "x", types="film,album").json()
+
+    assert body["layout"] == "blended"
+    assert body["notices"] == ["Your search mentions games, but games are switched off."]
+    assert {r["media_type"] for r in body["results"]} == {"film", "album"}
+
+
+def test_no_request_can_reach_the_grouped_layout_before_the_llm_exists(client: Client) -> None:
+    add_one_of_each()
+
+    for query in ("a video game about films", "the best album", "games"):
+        body = search(client, query).json()
+        assert body["layout"] == "blended"
+        assert "groups" not in body

@@ -201,8 +201,8 @@ def test_changing_the_filters_on_a_query_costs_nothing_more(client: Client) -> N
     add_item("A game", MediaType.GAME, 1985)
     embedder = StaticEmbedder(vec(1.0))
 
-    everything = search(client, embedder).json()
-    narrowed = search(client, embedder, eras="1980-1989").json()
+    everything = search(client, embedder, types="film").json()
+    narrowed = search(client, embedder, types="film", eras="1980-1989").json()
     games = search(client, embedder, types="game").json()
 
     assert len(embedder.calls) == 1

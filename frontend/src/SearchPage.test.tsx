@@ -39,7 +39,7 @@ test("searching shows a loading state, then the films with posters", async () =>
 
   expect(screen.getByRole("status")).toHaveTextContent("Searching");
   expect(await screen.findByText("Neon Rain Drive")).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledWith("/api/search/?q=a%20rainy%20night%20drive", {
+  expect(fetchMock).toHaveBeenCalledWith("/api/search/?q=a%20rainy%20night%20drive&types=film", {
     signal: expect.any(AbortSignal),
   });
   expect(screen.getByText("2001")).toBeInTheDocument();
@@ -73,7 +73,7 @@ test("a query already in the URL is searched on load", async () => {
   expect(screen.getByRole("searchbox")).toHaveValue("night drive");
   expect(await screen.findByText("Film 1")).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledTimes(1);
-  expect(fetchMock.mock.calls[0][0]).toBe("/api/search/?q=night%20drive");
+  expect(fetchMock.mock.calls[0][0]).toBe("/api/search/?q=night%20drive&types=film");
 });
 
 test("a blank search does nothing", () => {
@@ -155,7 +155,7 @@ test("going back re-runs the earlier search from the URL", async () => {
 
   await waitFor(() => expect(screen.getByRole("searchbox")).toHaveValue("two"));
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-  expect(fetchMock.mock.calls[1][0]).toBe("/api/search/?q=two");
+  expect(fetchMock.mock.calls[1][0]).toBe("/api/search/?q=two&types=film");
 });
 
 test("going back to the landing page clears the results", async () => {

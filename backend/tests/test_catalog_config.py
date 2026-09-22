@@ -277,3 +277,66 @@ def test_the_album_source_gets_its_mid_tail_settings_and_a_progress_callback() -
     assert source._mid_tail_max_scan == 77  # type: ignore[attr-defined]
     source._say("hello")  # type: ignore[attr-defined]
     assert messages == ["hello"]
+
+
+def test_search_layout_settings_have_sensible_defaults() -> None:
+    expected = {
+        "SEARCH_RESULT_LIMIT": "15",
+        "SEARCH_GROUP_LIMIT": "10",
+        "SEARCH_CANDIDATES_PER_TYPE": "50",
+        "SEARCH_BLEND_MIN_SLOTS": "2",
+    }
+    for name, value in expected.items():
+        result = load_settings_value(name, {})
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == value, name
+
+
+@pytest.mark.parametrize(
+    ("name", "bad"),
+    [
+        ("SEARCH_RESULT_LIMIT", "0"),
+        ("SEARCH_GROUP_LIMIT", "0"),
+        ("SEARCH_CANDIDATES_PER_TYPE", "0"),
+        ("SEARCH_BLEND_MIN_SLOTS", "-1"),
+        ("SEARCH_GROUP_LIMIT", "many"),
+    ],
+)
+def test_search_layout_settings_reject_bad_values(name: str, bad: str) -> None:
+    result = load_settings_value(name, {name: bad})
+
+    assert result.returncode != 0
+    assert name in result.stderr
+
+
+def test_the_blend_reservation_can_be_switched_off() -> None:
+    result = load_settings_value("SEARCH_BLEND_MIN_SLOTS", {"SEARCH_BLEND_MIN_SLOTS": "0"})
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "0"
+
+
+def test_the_default_candidate_pool_covers_what_is_shown() -> None:
+    assert "catalog.E005" not in check_ids()
+
+
+@pytest.mark.parametrize(
+    ("candidates", "results", "group"),
+    [(14, 15, 10), (9, 5, 10), (10, 15, 10)],
+)
+def test_the_candidate_pool_must_cover_the_lists_shown(
+    candidates: int, results: int, group: int
+) -> None:
+    with override_settings(
+        SEARCH_CANDIDATES_PER_TYPE=candidates,
+        SEARCH_RESULT_LIMIT=results,
+        SEARCH_GROUP_LIMIT=group,
+    ):
+        assert "catalog.E005" in check_ids()
+
+
+def test_a_pool_exactly_as_large_as_the_lists_is_fine() -> None:
+    with override_settings(
+        SEARCH_CANDIDATES_PER_TYPE=15, SEARCH_RESULT_LIMIT=15, SEARCH_GROUP_LIMIT=10
+    ):
+        assert "catalog.E005" not in check_ids()

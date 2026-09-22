@@ -136,8 +136,14 @@ WIKIMEDIA_REQUESTS_PER_SECOND = env_int("WIKIMEDIA_REQUESTS_PER_SECOND", 1)
 COVERART_REQUESTS_PER_SECOND = env_int("COVERART_REQUESTS_PER_SECOND", 4)
 
 # Search. Queries longer than the cap are rejected, not truncated, so their meaning never changes.
-SEARCH_RESULT_LIMIT = env_int("SEARCH_RESULT_LIMIT", 15)
 SEARCH_MAX_QUERY_LENGTH = env_int("SEARCH_MAX_QUERY_LENGTH", 200)
+# Results in a single-type list and in a blended list; and per type when results are grouped.
+SEARCH_RESULT_LIMIT = env_int("SEARCH_RESULT_LIMIT", 15)
+SEARCH_GROUP_LIMIT = env_int("SEARCH_GROUP_LIMIT", 10)
+# Candidates fetched per media type before the layout picks what to show.
+SEARCH_CANDIDATES_PER_TYPE = env_int("SEARCH_CANDIDATES_PER_TYPE", 50)
+# In a blended list, the slots every media type with matches is guaranteed (0 turns this off).
+SEARCH_BLEND_MIN_SLOTS = env_int("SEARCH_BLEND_MIN_SLOTS", 2, minimum=0)
 
 # Film catalog (TMDB). Non-commercial use only; TMDB data must be refreshed within 6 months.
 TMDB_READ_ACCESS_TOKEN = os.environ.get("TMDB_READ_ACCESS_TOKEN", "").strip()

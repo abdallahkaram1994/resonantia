@@ -67,7 +67,8 @@ async function readJson(response: Response): Promise<unknown> {
 export async function search(query: string, signal?: AbortSignal): Promise<SearchResponse> {
   let response: Response;
   try {
-    response = await fetch(`/api/search/?q=${encodeURIComponent(query)}`, { signal });
+    // Films only for now: the page shows one poster grid. The type toggles arrive with the search UI.
+    response = await fetch(`/api/search/?q=${encodeURIComponent(query)}&types=film`, { signal });
   } catch (error) {
     if (signal?.aborted) throw error;
     throw new SearchError("network", "Could not reach the server. Check your connection.");
