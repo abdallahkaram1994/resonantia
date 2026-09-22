@@ -2,7 +2,7 @@
 
 A vibe-first search across **games, films, and albums**. Describe a feeling ("a rainy night drive") and get matches through one shared embedding space, with a detail page and "more like this" for each item.
 
-**Status:** milestones 1–4: scaffold, films end to end, games/albums/the worker, and search behavior (filters, layout, a detail page, "more like this", a full-text fallback). Search covers all three media types, with type toggles, decade chips and a real `/item/<id>` page. The LLM layer, abuse protection and deployment come later. The plan and the decision log are in [docs/SPEC.md](docs/SPEC.md).
+**Status:** milestones 1–5: scaffold, films end to end, games/albums/the worker, search behavior (filters, layout, a detail page, "more like this", a full-text fallback), and the LLM layer (query parsing, a one-sentence match explanation on the detail page). Search covers all three media types, with type toggles, decade chips and a real `/item/<id>` page. Abuse protection and deployment come later. The plan and the decision log are in [docs/SPEC.md](docs/SPEC.md).
 
 ## Prerequisites
 
