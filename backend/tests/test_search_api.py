@@ -11,6 +11,7 @@ from catalog.embedding.base import (
     EmbeddingRequestError,
     EmbeddingUnavailable,
 )
+from catalog.llm.base import LLMUnavailable
 from catalog.models import EMBEDDING_DIMENSIONS, Item, MediaType
 from tests.factories import StaticEmbedder
 
@@ -18,6 +19,16 @@ pytestmark = pytest.mark.django_db
 
 MODEL = "test-model"
 GET_EMBEDDER = "catalog.views.get_embedder"
+GET_LLM = "catalog.views.get_llm"
+
+
+@pytest.fixture(autouse=True)
+def no_llm_parsing():
+    """Unless a test overrides this, query parsing is unavailable: vibe_text falls back to the
+    raw query and the hint stays None, exactly as search behaved before the LLM parse step
+    existed. Keeps every test below free to ignore parsing unless it is what it is testing."""
+    with mock.patch(GET_LLM, side_effect=ImproperlyConfigured("no LLM configured in tests")):
+        yield
 
 
 def vec(*head: float) -> list[float]:
@@ -570,13 +581,104 @@ def test_the_toggle_wins_over_a_named_type_with_a_notice(client: Client) -> None
     assert {r["media_type"] for r in body["results"]} == {"film", "album"}
 
 
-def test_no_request_can_reach_the_grouped_layout_before_the_llm_exists(client: Client) -> None:
+def test_grouped_layout_is_unreachable_while_parsing_is_unavailable(client: Client) -> None:
+    # The autouse fixture above makes get_llm unavailable for every test in this file unless a
+    # test overrides it, so no hint ever reaches build_layout here, whatever the query says.
     add_one_of_each()
 
     for query in ("a video game about films", "the best album", "games"):
-        body = search(client, query).json()
+        body = search(client, query, types="film,game,album").json()
         assert body["layout"] == "blended"
         assert "groups" not in body
+
+
+# --- the LLM parse step, wired into search (M5) --------------------------------------------
+
+
+def parses_to(vibe_text: str, hint: str | None):
+    from catalog.llm.base import ParsedQuery
+
+    llm = mock.Mock()
+    llm.parse_query.return_value = ParsedQuery(vibe_text=vibe_text, media_type_hint=hint)
+    return mock.patch(GET_LLM, return_value=llm)
+
+
+def test_a_real_parsed_hint_reaches_the_layout_as_grouped(client: Client) -> None:
+    add_one_of_each()
+
+    with parses_to("x", "album"):
+        body = search(client, "an album like x", types="film,game,album").json()
+
+    assert body["layout"] == "grouped"
+    assert [g["media_type"] for g in body["groups"]] == ["album", "film", "game"]
+
+
+def test_a_hint_for_a_switched_off_type_still_shows_the_toggle_wins_notice(
+    client: Client,
+) -> None:
+    add_one_of_each()
+
+    with parses_to("x", "game"):
+        body = search(client, "a game like x", types="film,album").json()
+
+    assert body["layout"] == "blended"
+    assert any("switched off" in n for n in body["notices"])
+
+
+def test_a_successful_parse_embeds_the_vibe_text_not_the_raw_query(client: Client) -> None:
+    add_item("Exact", vec(1.0))
+    embedder = StaticEmbedder(QUERY_VECTOR)
+
+    with parses_to("cleaned up vibe", None):
+        search(client, "please find me a film about cleaned up vibe", embedder)
+
+    assert embedder.calls == [(["cleaned up vibe"], "query")]
+
+
+def test_the_response_still_echoes_back_the_visitors_own_raw_query(client: Client) -> None:
+    with parses_to("cleaned up vibe", "film"):
+        body = search(client, "  Please Find Me A Film  ", types="film").json()
+
+    assert body["query"] == "please find me a film"
+
+
+def test_a_parse_failure_falls_back_to_the_raw_query_with_no_hint_and_no_notice(
+    client: Client,
+) -> None:
+    add_one_of_each()
+    llm = mock.Mock()
+    llm.parse_query.side_effect = LLMUnavailable("down")
+
+    with mock.patch(GET_LLM, return_value=llm):
+        body = search(client, "x", types="film,game,album").json()
+
+    assert body["layout"] == "blended"  # never grouped: no hint survived the failure
+    assert body["notices"] == []  # unlike an embedding failure, this is silent
+
+
+def test_the_full_text_fallback_also_searches_on_the_parsed_vibe_text(client: Client) -> None:
+    # The raw query and the vibe text share no words, so only whichever one full-text search
+    # actually uses will find a match: this distinguishes the two, unlike overlapping phrasing.
+    add_item("Xylophone Marmalade", vec(1.0))  # matches only the parsed vibe text
+    add_item("Please Help Me Search", vec(1.0, 1.0))  # matches only the raw query's own words
+    embedder = StaticEmbedder(QUERY_VECTOR)
+    embedder.embed = mock.Mock(side_effect=EmbeddingUnavailable("down"))  # type: ignore[method-assign]
+
+    with parses_to("xylophone marmalade", None):
+        body = search(client, "please help me search", embedder).json()
+
+    assert body["mode"] == "text"
+    assert [r["title"] for r in body["results"]] == ["Xylophone Marmalade"]
+
+
+def test_llm_misconfiguration_is_treated_like_any_other_parse_failure(client: Client) -> None:
+    add_one_of_each()
+
+    with mock.patch(GET_LLM, side_effect=ImproperlyConfigured("GEMINI_API_KEY is not set")):
+        response = search(client, "x", types="film,game,album")
+
+    assert response.status_code == 200
+    assert response.json()["layout"] == "blended"
 
 
 # --- full-text fallback: end to end -------------------------------------------------------------

@@ -13,6 +13,8 @@ from catalog.embedding.base import EmbeddingError, EmbeddingRateLimited
 from catalog.embedding.factory import get_embedder
 from catalog.filters import FilterError, parse_filters, parse_media_types
 from catalog.layout import GROUPED, build_layout
+from catalog.llm.base import LLMError
+from catalog.llm.factory import get_llm
 from catalog.models import Item, MediaType
 from catalog.search import (
     SearchHit,
@@ -73,15 +75,29 @@ def search(request: Request) -> Response:
     except FilterError as error:
         return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Parse the query into a cleaner vibe text and an optional media-type hint (SPEC section 7.1
+    # step 3). A failure here is silent, not a "mode" the visitor is told about: it just leaves
+    # vibe_text as the raw query and hint as None, and normal vibe search still proceeds. Failures
+    # are logged without the query text: searches are anonymous and stay private.
+    vibe_text = query
+    hint: str | None = None
+    try:
+        parsed = get_llm().parse_query(query)
+        vibe_text = parsed.vibe_text
+        hint = parsed.media_type_hint
+    except ImproperlyConfigured as error:
+        logger.error("Search is misconfigured (LLM): %s", error)
+    except LLMError as error:
+        logger.warning("Query parsing failed (%s): %s", type(error).__name__, error)
+
     # An embedding failure falls back to full-text search rather than failing the request (SPEC
-    # section 7.5). Failures are logged without the query text: searches are anonymous and stay
-    # private.
+    # section 7.5).
     mode = MODE_VIBE
     vector = None
     embedder = None
     try:
         embedder = get_embedder()
-        vector = embed_query(embedder, query)
+        vector = embed_query(embedder, vibe_text)
     except ImproperlyConfigured as error:
         logger.error("Search is misconfigured: %s", error)
         mode = MODE_TEXT
@@ -103,15 +119,14 @@ def search(request: Request) -> Response:
         )
     else:
         pools = text_retrieve_by_type(
-            query,
+            vibe_text,
             media_types=media_types,
             filters=filters,
             limit=settings.SEARCH_CANDIDATES_PER_TYPE,
         )
-    # No media type hint yet: the LLM parse that names one arrives in M5.
     layout = build_layout(
         pools,
-        hint=None,
+        hint=hint,
         result_limit=settings.SEARCH_RESULT_LIMIT,
         group_limit=settings.SEARCH_GROUP_LIMIT,
         min_slots=settings.SEARCH_BLEND_MIN_SLOTS,

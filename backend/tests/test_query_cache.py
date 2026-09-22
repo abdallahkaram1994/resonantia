@@ -5,6 +5,7 @@ import logging
 from unittest import mock
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.db import DatabaseError
 from django.test import Client, override_settings
 
@@ -21,6 +22,15 @@ from tests.factories import StaticEmbedder
 pytestmark = pytest.mark.django_db
 
 GET_EMBEDDER = "catalog.views.get_embedder"
+GET_LLM = "catalog.views.get_llm"
+
+
+@pytest.fixture(autouse=True)
+def no_llm_parsing():
+    """See test_search_api.py: keeps this file's searches behaving as they did before the LLM
+    parse step existed, unless a test overrides it."""
+    with mock.patch(GET_LLM, side_effect=ImproperlyConfigured("no LLM configured in tests")):
+        yield
 
 
 def vec(*head: float) -> list[float]:
