@@ -86,6 +86,17 @@ test("an album card is square while a film card is portrait", () => {
   expect(albumContainer.querySelector(".aspect-square")).not.toBeNull();
 });
 
+test("a game card uses its own box shape, not the film poster's", () => {
+  // TMDB posters are 342x513 (2:3); IGDB covers are 264x352 (3:4) — visibly stubbier, confirmed
+  // by reading the real files. Sharing the film box left gray letterboxing top and bottom.
+  const { container } = render(
+    <ResultCard result={film({ mediaType: "game", coverUrl: null })} />,
+  );
+
+  expect(container.querySelector(".aspect-\\[3\\/4\\]")).not.toBeNull();
+  expect(container.querySelector(".aspect-\\[2\\/3\\]")).toBeNull();
+});
+
 test("no type badge is shown by default", () => {
   render(<ResultCard result={film()} />);
 

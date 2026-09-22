@@ -2,10 +2,12 @@ import { useState } from "react";
 import type { MediaType, SearchResult } from "./api";
 import Link from "./Link";
 
-// Albums are square art; films and games are both portrait covers, close enough to share a ratio.
+// Each source's own image shape, confirmed by reading real files: TMDB posters (w342) are
+// 342x513, exactly 2:3; IGDB covers (t_cover_big) are 264x352, exactly 3:4 — visibly stubbier
+// than a film poster, not close enough to share its box; Cover Art Archive images are 500x500.
 export const ASPECT: Record<MediaType, string> = {
   film: "aspect-[2/3]",
-  game: "aspect-[2/3]",
+  game: "aspect-[3/4]",
   album: "aspect-square",
 };
 

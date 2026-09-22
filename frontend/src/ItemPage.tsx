@@ -185,7 +185,10 @@ export default function ItemPage({ id }: { id: number }) {
 
       {state.kind === "ready" && (
         <div className="mt-6">
-          <div className="flex flex-col gap-6 sm:flex-row">
+          {/* items-start: without it, flexbox's default cross-axis stretch forces the cover to
+              match the text column's height, ignoring its own aspect ratio — a long summary made
+              the cover box balloon into a huge gray rectangle around a small, centered image. */}
+          <div className="flex flex-col gap-6 sm:flex-row sm:items-start">
             <Cover item={state.item} />
             <div className="flex-1">
               <p className="text-xs uppercase tracking-wide text-gray-500">

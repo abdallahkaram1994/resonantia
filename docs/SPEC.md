@@ -1,6 +1,6 @@
 # Resonantia — Project Spec
 
-**Status:** requirements settled; milestones 1 (scaffold), 2 (films end to end) and 3 (games, albums and the worker) built.
+**Status:** requirements settled; milestones 1 (scaffold), 2 (films end to end), 3 (games, albums and the worker) and 4 (search behavior: filters, layout, item detail, "more like this", full-text fallback) built.
 **Purpose:** portfolio project demonstrating agentic development with Claude. Live for roughly one year while job hunting, then redeployable from the repo plus a database dump.
 
 Items marked **(default)** were proposed as sensible defaults and not explicitly debated. Items marked **(verify)** rely on third-party facts that must be checked against current provider docs before building on them.
@@ -127,10 +127,12 @@ The differentiator is cross-media mood matching in one shared embedding space. I
 
 Two LLM calls maximum per uncached search: parse, then rerank+explain.
 
+**Built in M4** (steps 3 and 6 do not exist yet — no LLM parse, no rerank, no explanations; that is M5): normalize → query-embedding cache lookup (step 4's cache, not step 2's full-result cache, which is M6) → embed → retrieve per type with filters in SQL, `SEARCH_CANDIDATES_PER_TYPE` (default 50) per type → lay out (7.3) → return. A query too long is a 400; an embedding failure falls back to full-text search (7.5) instead of failing. No media-type hint exists yet, so grouped layout is unreachable from a live request until M5 (the endpoint always passes `hint=None`); it is built and tested with a hint supplied directly.
+
 ### 7.2 Filters
 
-- **Media type toggles** (all on by default): hard constraints applied in SQL. Toggling a filter re-runs only SQL, using cached intent and embedding.
-- **Era:** decade chips (80s, 90s, 00s…) in the UI, sent to the API as year ranges `era: [[1980,1989],[1990,1999]]` (chips OR'd). Stored as integer `release_year`.
+- **Media type toggles:** hard constraints applied in SQL. Toggling a filter re-runs only SQL, using cached intent and embedding. **Built in M4:** films and games are on by default; albums start off, but are fully searchable by switching the toggle on (see the decision log — embedding hubness among albums).
+- **Era:** decade chips (80s, 90s, 00s…) in the UI, sent to the API as `eras=1980-1989,1990-1999` (chips OR'd, at most 10 ranges, each within 1800–2200). Stored as integer `release_year`.
   - No era filter active: keep items with null year.
   - Era filter active: drop items with null year.
   - Albums and games/films use their own release date.
@@ -142,9 +144,13 @@ Two LLM calls maximum per uncached search: parse, then rerank+explain.
 ### 7.3 Layout (hybrid)
 
 - One type enabled → single ranked list.
-- Multiple types enabled and the query names a type → **grouped**, named type first.
-- Multiple types enabled, no type named → **blended** list. Normalize scores per type or reserve a minimum share of slots per enabled type so no type dominates.
+- Multiple types enabled and the query names a type → **grouped**, named type first, `SEARCH_GROUP_LIMIT` (default 10) per group. A type with no matches still appears, empty, so the page can say so.
+- Multiple types enabled, no type named → **blended** list, `SEARCH_RESULT_LIMIT` (default 15) items. Each type with matches is guaranteed `SEARCH_BLEND_MIN_SLOTS` (default 2) slots so it is never crowded out entirely; the rest go to the highest-standing hits regardless of type (see "Blending: standout score" below).
 - Per-type filters apply inside each type's candidate pool *before* scores are normalized and merged.
+
+**Blending: standout score, not min-max.** The original idea — scale each type's pool from its own weakest to its own best hit (0 to 1) — was tried and rejected after testing against the real, embedded catalog: every type's own best hit always scales to 1, even a barely-relevant one, so a type that plainly did not fit the query still won equal footing in the blend. The catalog is also dense enough (many items sit at a broadly similar distance from most queries) that within-pool scaling barely differentiates a genuinely strong match from a mediocre one.
+
+The built approach scores each hit by how many standard deviations above its **own type's average similarity to this query** it sits (a z-score), computed against the whole type — every item of that type, not just the retrieved candidates — so filters never change a hit's standing. This needs one extra aggregate query per enabled type (a mean and a population standard deviation over that type's embedded rows), cheap at the catalog's size. Verified on the real catalog: for "epic fantasy adventure" it correctly ranked Skyrim and two Lord of the Rings films above weaker matches from every type, instead of an unrelated album's single strong hit crowding out equally strong films purely because it happened to be that album pool's best.
 
 ### 7.4 Ranking
 
@@ -160,21 +166,25 @@ Two LLM calls maximum per uncached search: parse, then rerank+explain.
 | Primary LLM rate-limited | Fall back to secondary provider |
 | Embedding API unavailable or budget circuit breaker tripped | Serve cached results, else **Postgres full-text search** (`tsvector` on title, tags, description). Show a short notice. |
 
+**Built in M4.** Any embedding failure (provider down, rate-limited, or misconfigured) now falls back to Postgres full-text search rather than failing the request: the response is a normal `200` with `mode: "text"` and a notice explaining the degradation, not the `503` that section 9 describes for "search failures" (that policy still holds for anything that fails *both* ways, which cannot currently happen — there is no other failure mode modeled yet). "Serve cached results" today only means the query-embedding cache (a hit there needs no provider call at all and stays in vibe mode); the full result cache that would let a *previously failed* query still serve a cached ranked list is M6.
+
+Full-text matching reduces the query to plain `[a-z0-9]` words (never handed to Postgres' own query syntax) and OR's them, so a partial phrase match still counts, then ranks with plain `ts_rank`, **not** `ts_rank_cd`. Cover-density ranking was tried first, since it is usually the better choice, but tested directly against Postgres it rewards a document that repeats one matched word over one that matches several different words for an OR query — a document with "rain" four times outranked one with "rain" and "night" each once. Plain `ts_rank` gets this the right way round. A GIN index on `combined_text` backs the match itself (confirmed via `EXPLAIN` on the real catalog: a bitmap index scan, not a sequential scan). The same filters and the same layout code apply in text mode; standing for the blend is scaled within each type's own matched pool rather than against the whole catalog like vibe mode, since a full-text pool is mostly exact non-matches elsewhere and the cheaper approach is not misleading there the way it was for vibe search.
+
 ---
 
 ## 8. Pages and UX
 
 Style reference: Letterboxd (poster-grid, clean, dense metadata). Flow: land → type a prompt → see results → open an item → see similar items.
 
-- **Landing:** a single prompt box, plus pre-warmed example queries (served from cache, so the first click costs nothing).
-- **Results:** cover grid per the layout rules, media type toggles, decade chips. URL holds state: `/search?q=…&types=…&eras=…`.
-- **Detail:** real route `/item/<id>` (not a modal). Shows cover, summary, metadata, scores, and availability.
-  - Films: TMDB score, lazily fetched OMDb scores, streaming availability for the visitor's region.
-  - Games: IGDB score, store links (Steam, GOG, Epic, etc.).
-  - Albums: no score. Wikipedia summary with attribution, or "No summary available for this album."
-  - **"More like this":** one pgvector query using the item's stored vector, excluding itself, grouped by media type. **No external calls.**
-- **Region:** auto-detect from Cloudflare's country header (trusted only when the request comes from Cloudflare ranges), plus a small picker that overrides it, stored client-side. Fall back to US when there is no data.
-- **Footer:** attribution and non-endorsement notices for every source, Wikipedia license note.
+- **Landing:** a single prompt box, plus pre-warmed example queries (served from cache, so the first click costs nothing) — the prompt box is built; pre-warming is M6 (needs the result cache).
+- **Results:** cover grid per the layout rules, media type toggles, decade chips. URL holds state: `/search?q=…&types=…&eras=…` (`types`/`eras` are left out of the URL when they equal the defaults, for a clean address). A cover is fitted inside its type's box, never cropped to fill it — a source image's real proportions do not reliably match its type's usual shape (an IGDB game cover especially can be almost any aspect ratio), so cropping was zooming into the middle of some of them.
+- **Detail:** real route `/item/<id>` (not a modal), built in M4. Shows cover, summary, metadata, and scores.
+  - Films: TMDB score. OMDb scores and streaming availability are not built yet (M8/M9).
+  - Games: IGDB score. Store links are not built yet (M8); IGDB is not even asked for that data until then.
+  - Albums: no score. Wikipedia summary with attribution ("Source: *title* on Wikipedia", linked, plus a CC BY-SA 4.0 link), or "No summary available for this album."
+  - **"More like this":** one pgvector query using the item's stored vector, excluding itself, grouped by media type, `ITEM_SIMILAR_LIMIT` (default 10) total across every type. **No external calls.** Unlike blended search, this has no per-type minimum reservation — one type can fill the whole list — since it is a single global ranking, not a merge of separately filtered pools. A weak, tonally-mismatched item occasionally appears this way (a franchise sequel's neighbors can include an unrelated film that happens to share several genre/keyword words); see the decision log for what was checked and deliberately deferred.
+- **Region:** auto-detect from Cloudflare's country header (trusted only when the request comes from Cloudflare ranges), plus a small picker that overrides it, stored client-side. Fall back to US when there is no data. Not built yet (M9).
+- **Footer:** attribution and non-endorsement notices for every source. Built in M4 for TMDB, IGDB, Last.fm ("powered by AudioScrobbler"), MusicBrainz and the Cover Art Archive; the Wikipedia licence note is per-item on the album detail page instead, where the text it credits actually appears.
 
 ---
 
@@ -192,7 +202,7 @@ Style reference: Letterboxd (poster-grid, clean, dense metadata). Flow: land →
 
 ### Other controls
 - Query length cap; LLM output validated against schema; the LLM sees only the query and stored item metadata and has **no tools**.
-- Search failures return one generic 503 (with `Retry-After` when the provider gave a delay). Provider error details are logged, never returned, and **query text is never logged**.
+- Search failures return one generic 503 (with `Retry-After` when the provider gave a delay). Provider error details are logged, never returned, and **query text is never logged**. **Built in M4:** an embedding failure specifically no longer reaches this path — it falls back to full-text search (7.5) and returns a normal 200 instead, so this 503 is reserved for a failure the fallback cannot cover (none exists yet).
 - Until this milestone (M6) is built, the search endpoint has no rate limits and must not be exposed publicly.
 - Signed session cookie issued on page load and required by the API.
 - Cloudflare Turnstile challenge after a few searches or on suspicious behavior **(verify** current terms; use Cloudflare's dummy keys locally).
@@ -201,7 +211,7 @@ Style reference: Letterboxd (poster-grid, clean, dense metadata). Flow: land →
 - Tiered limits protect legitimate users behind shared IPs.
 
 ### Caching layers (Postgres-backed, no Redis)
-1. Query embedding cache (normalized text)
+1. Query embedding cache (normalized text). **Built in M4**, pulled forward from M6: a `QueryEmbedding` row keyed by a hash of the normalized text plus the embedding model and dimension, so toggling a filter on an already-searched query costs no provider quota. The query text itself is never stored, only its hash, consistent with "query text is never logged" above. Pruning old rows is still M6.
 2. Parsed-intent cache
 3. Full result cache (ranked IDs + explanations), keyed with embedding model and prompt version so changes invalidate automatically; long TTL since the catalog rarely changes
 4. Detail pages and "more like this": HTTP cache headers, no external calls
@@ -288,6 +298,8 @@ Testing only; nothing here runs in production or adds cost.
 - **Automated checks (no LLM cost):** toggles and era filters respected; type-scoped filters never affect other types; layout rules hold; fallbacks work when the LLM or embedding call is forced to fail.
 - **Quality metric:** recall of expected items in the top 10, tracked over time, run in CI against cached embeddings.
 - README shows before/after numbers for changes like prompt tweaks or ranking weights.
+- **Open from M4, to measure here rather than judge from single examples:** album vibe-search quality (its combined text is mostly encyclopedic Wikipedia biography — release dates, labels, chart certifications — with little mood-descriptive language, unlike a film or game's synopsis and keyword list), and whether "more like this" needs a content-rating signal (a franchise sequel's neighbors can include a tonally unrelated item that shares several genre/keyword words; MPAA/ESRB data is confirmed fetchable from TMDB and IGDB at no extra request cost and would need to be embedded as text, not used as a filter, to keep ranking vibe-similarity-only — but re-embeds the whole film and game catalog, a real one-time quota cost).
+- **Also found in M4, and partly acted on:** embedding hubness among albums — a small number of albums sit disproportionately close to many unrelated queries (confirmed on the real catalog: one album was the nearest album match for 20% of a 500-film sample, regardless of what any of those films were about). This is a distinct, more fundamental problem than the text-quality one above — better album text would not necessarily fix it, since hubness is a known effect in high-dimensional nearest-neighbor search generally. The symptom (albums crowding default results with a repetitive handful of matches) was mitigated immediately by leaving albums out of the default search (decision log); the underlying cause is not fixed and would need a proper correction (each item scored against its own typical similarity level, not just its type's pool for one query), which belongs here, evaluated against the golden set.
 
 ---
 
@@ -298,11 +310,11 @@ Each milestone ends with tests passing, docs updated, and a stop for human revie
 1. **Scaffold:** Compose stack (`db` with Postgres+pgvector, `web`, `caddy`; the `worker` container arrives in M3), a minimal front-end scaffold (Vite + React + TypeScript + Tailwind with one placeholder page that calls a backend health endpoint; no product UI), CI covering backend and front-end (lint, typecheck, tests, build), `CLAUDE.md`, `.env.example`. *Accept:* `docker compose up` starts the stack; the pgvector extension is enabled; Caddy serves the built front-end at `/` and proxies `/api` to Django; the placeholder page shows the health check result; CI passes.
 2. **Films end to end:** data model with provenance, TMDB adapter, combined-text builder, `Embedder` interface, basic search endpoint, bare-bones page. *Accept:* a real query returns relevant films locally.
 3. **Games and albums:** IGDB adapter; Last.fm, MusicBrainz, Cover Art Archive, Wikipedia/Wikidata; entity resolution; Procrastinate worker container with resumable ingest and embedding tasks. *Accept:* sample ingest of all three types.
-4. **Search behavior:** filters via the registry, hybrid layout, "more like this", Postgres full-text fallback.
+4. **Search behavior:** filters via the registry, hybrid layout, "more like this", Postgres full-text fallback. *Accept:* toggles and era chips narrow results without crashing; a type-scoped filter never touches another type's rows; the fallback still returns something useful when embedding is forced to fail. Built with a working search UI, poster grid and detail page too, pulled forward from M8 since M4 needed a browser to verify filters and layout against; the query-embedding cache was pulled forward from M6 for the same reason (toggling a filter must not cost quota to be worth having). See the decision log for what changed from the original design after testing against the real catalog.
 5. **LLM layer:** provider interface (Gemini + fallback), parse and rerank/explain, schema validation, forced-failure fallbacks.
 6. **Protection:** rate limits, caches, circuit breaker, session cookie, Turnstile, Cloudflare header handling; periodic worker tasks (cache and counter pruning, availability/score refresh, pre-warming).
-7. **Evaluation:** golden-set harness and CI regression check.
-8. **Frontend polish:** landing, poster grid, detail page, region picker, attribution footer.
+7. **Evaluation:** golden-set harness and CI regression check. Also the right place to revisit the two quality questions logged as open in M4: whether albums need a different text strategy, and whether "more like this" needs a content-rating signal — see the decision log.
+8. **Frontend polish:** landing page pre-warming, region picker, remaining polish. The poster grid, detail page and attribution footer arrived in M4 instead (see above).
 9. **Deploy:** VPS, Cloudflare, origin lockdown, auto-deploy, backups, restore from dump.
 10. **README:** screenshots, screen recording, attributions, this decision log.
 
@@ -370,3 +382,15 @@ Start with films only (M2) because it exposes problems with the data model, embe
 | Worker retries | Three retries with backoff (8 s, 64 s, 8.5 min) for temporary outages only | A brief outage should not lose a job, but a rejected key or a bug will not fix itself and should fail at once |
 | Worker keys | The `worker` service gets the whole `.env`; `web` keeps a short list | Ingest jobs call TMDB, IGDB and Last.fm. Web serves visitors and needs only the embedding key |
 | Worker scope in M3 | Jobs are ingest and embedding only, queued by `enqueue_job`. Periodic jobs come in M6 | The full ingest runs on the developer's machine; the VPS worker is for small top-ups |
+| Blending score | Standout (z-score against the whole type's average similarity for this query), not min-max scaling within the retrieved pool | Tested against the real catalog: min-max always scales a pool's own best hit to 1 even when it is a weak match, so a barely-relevant type could win equal footing over a strongly-matching one. Standout needs one extra aggregate query per type but correctly favored genuinely strong matches in a live check |
+| Query embedding cache | Pulled forward from M6 into M4, keyed by a hash of the normalized text plus model and dimension; the query text itself is never stored | A filter toggle re-runs the search (section 7.2), and without this every toggle would spend embedding quota on an identical query. Verified live: three searches, one spelling variant, one provider request |
+| Embedding-failure response | A 200 with `mode: "text"` and a notice, not the blanket 503 section 9 originally described for "search failures" | The full-text fallback (7.5) makes an embedding outage a degraded-but-successful search, not a failed request; 503 is kept for a failure the fallback itself cannot cover |
+| Full-text ranking | Plain `ts_rank`, not `ts_rank_cd` (cover density) | Tested directly against Postgres: for the OR-combined query the fallback builds, cover density rewards repeating one matched word over matching several different ones (a document with "rain" four times outranked one with "rain" and "night" each once). Plain `ts_rank` ranks that the right way round |
+| Full-text standing | Scaled within each type's own matched pool (the approach rejected for vibe search), not against the whole catalog | A full-text pool is mostly exact non-matches elsewhere, unlike a dense vibe-similarity pool, so the cheaper within-pool scaling is not misleading here and needs no extra aggregate query |
+| "More like this" size | `ITEM_SIMILAR_LIMIT` default 10, no per-type minimum reservation | Matches `SEARCH_GROUP_LIMIT`'s existing convention. It is one global ranking (SPEC section 8), not a merge of separately filtered per-type pools, so blended search's fairness reservation does not apply; lowering the count alone does not reliably filter out a tonally mismatched item, since the similarity drop-off near the cutoff is usually gradual, not a clean break |
+| Frontend routing | A small hand-rolled router (`pushState`/`popstate`, one hook, one `Link` component), not a routing library | The app has exactly two page shapes (search and item detail); the existing `?q=` URL state already used this pattern, so extending it was smaller than adding a dependency for two routes |
+| Cover fit | `object-contain` (letterboxed), not `object-cover` (cropped to fill) | A source image's real proportions do not reliably match its type's usual box, especially an IGDB game cover; cropping was zooming into the middle of a mismatched image and losing part of it |
+| Cover box shapes | Film 2:3, game 3:4, album square — three shapes, not two | Read the real files: TMDB posters (`w342`) are exactly 342x513 (2:3); IGDB covers (`t_cover_big`) are exactly 264x352 (3:4), visibly stubbier; Cover Art Archive is 500x500. Games sharing the film box left visible gray letterboxing on every game cover, in the grid and in "more like this" alike |
+| Detail page cover sizing | `items-start` on the cover/metadata row, overriding flexbox's default stretch | A long summary was stretching the sibling flex item, and flexbox's cross-axis stretch overrides a box's own `aspect-ratio`-derived height, not the other way around — the cover grew into a tall gray rectangle around a small, centered image. `aspect-ratio` plus a responsive `max-w-xs` already gives a consistent shape at every viewport width without needing a fixed pixel size |
+| Content-rating signal for "more like this" | Checked feasible (TMDB certifications and IGDB age ratings are both fetchable in the same request the ingest already makes, confirmed live), not built | Real cost: changes every already-ingested film and game's combined text, forcing a full re-embed (a real one-time quota cost). Belongs in M7 with the album question, measured against the golden set rather than tuned against one example |
+| Default search types | Films and games; albums start switched off but stay fully searchable with `types=album` | Discovered live: a handful of albums are disproportionate nearest-neighbor "hubs" in the shared embedding space, one of them the nearest album match for 20% of a 500-film sample regardless of what those films were about, crowding default results with a repetitive few. A quick, reversible mitigation; the underlying cause (hubness, distinct from the album text-quality question above) is not fixed and belongs in M7 |

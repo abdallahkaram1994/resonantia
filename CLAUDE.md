@@ -59,7 +59,7 @@ Keep this section current. Run from the repo root unless a `cd` is shown. Prereq
 - `... ingest_games --limit 50` fetches main games from IGDB (Twitch OAuth).
 - `... ingest_albums --limit 50 [--retry-skipped]` finds albums on Last.fm, identifies them at MusicBrainz by id, and adds covers and Wikipedia summaries. About 3 to 4 seconds per album. It prints why albums were left out; `--retry-skipped` re-checks ones rejected earlier.
 - `... embed_items [--limit N]` embeds pending items of every type with Gemini. The free tier allows about 1,000 requests a day, so it stops cleanly when the quota runs out; run it again the next day.
-- Search (films only until M4): `curl 'http://localhost:8080/api/search/?q=a%20rainy%20night%20drive'` (spends one embedding request).
+- Search: `curl 'http://localhost:8080/api/search/?q=a%20rainy%20night%20drive'` (spends one embedding request unless the query was already cached; searches films and games by default — add `&types=film,game,album` to include albums, or `&eras=1980-1989,1990-1999` to filter by decade). Albums are off by default because of embedding hubness (SPEC decision log). Item detail: `curl 'http://localhost:8080/api/items/<id>/'`; its "more like this": `curl 'http://localhost:8080/api/items/<id>/similar/'` (no provider calls).
 
 **Worker** (`worker` service, started by `docker compose up`; needs `web` healthy first): `docker compose exec web python manage.py enqueue_job <ingest_films|ingest_games|ingest_albums|embed_pending> [--limit N]`, then `docker compose logs -f worker`. The same job cannot wait in the queue twice. Health: `docker compose exec worker python manage.py procrastinate healthchecks`. Settings: `WORKER_CONCURRENCY`, `LOG_LEVEL`.
 
@@ -75,9 +75,10 @@ Keep this section current. Run from the repo root unless a `cd` is shown. Prereq
 **CI** (`.github/workflows/ci.yml`) runs the backend checks, the frontend checks, and a stack smoke test (build, start, `/api/health/` and `/` through Caddy, and a queued `embed_pending` job that the worker must finish).
 
 **Not implemented yet:**
-- Search across all three types, filters and layout: M4. (`/api/search/` returns films only.)
-- Periodic worker jobs (pruning, refresh, pre-warming): M6.
-- Evaluation harness: M7.
+- The LLM layer (query parsing, rerank/explain, a media-type hint from the query): M5. Grouped layout exists and is tested but is unreachable from a live request until then.
+- Rate limits, the full-result and parsed-intent caches, the circuit breaker, session cookie, Turnstile: M6. Periodic worker jobs (pruning, refresh, pre-warming): M6.
+- Evaluation harness: M7. Two open quality questions are logged there: album search is weaker for mood queries than film/game, and "more like this" can surface a tonally mismatched item within a franchise (a content-rating signal was checked feasible but not built — see the SPEC decision log).
+- OMDb scores, game store links, region-aware streaming availability, the region picker: M8/M9.
 
 ## Testing rules
 

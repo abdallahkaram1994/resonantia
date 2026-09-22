@@ -64,6 +64,19 @@ test("a cover is fitted inside its box, never cropped to fill it", async () => {
   expect(cover).not.toHaveClass("object-cover");
 });
 
+test("a long summary cannot stretch the cover box off its own aspect ratio", async () => {
+  // Flexbox stretches a row's children to match its tallest one by default, which was forcing
+  // the cover box to grow far past its own aspect ratio next to a long summary, leaving a huge
+  // gray rectangle around a small, centered image. items-start on the row is what stops it.
+  stubItem(rawItemDetail({ summary: "A very long summary. ".repeat(80) }));
+
+  render(<ItemPage id={1} />);
+  const cover = await screen.findByAltText("Film cover for The Film");
+
+  const row = cover.closest(".flex.flex-col.gap-6");
+  expect(row).toHaveClass("sm:items-start");
+});
+
 test("scores are shown with their source label and vote count", async () => {
   stubItem(
     rawItemDetail({ scores: [{ source: "tmdb", value: 8.488, vote_count: 41215 }] }),
