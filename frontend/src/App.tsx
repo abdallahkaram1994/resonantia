@@ -4,7 +4,8 @@ import Link from "./Link";
 import { useLocation } from "./router";
 import SearchPage from "./SearchPage";
 
-const ITEM_PATH = /^\/item\/(\d+)(?:\/|$)/;
+// The id is followed by a trailing slash, a `?q=...`, or nothing (end of string).
+const ITEM_PATH = /^\/item\/(\d+)(?:[/?]|$)/;
 
 // The search an item link was opened from, if any (see ResultCard/Grid), read back out of the
 // URL so ItemPage can ask for a match explanation. `location` is already `pathname + search`.
