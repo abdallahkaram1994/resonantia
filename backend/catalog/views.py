@@ -3,17 +3,25 @@ import math
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from catalog.detail import item_detail as build_item_detail
 from catalog.embedding.base import EmbeddingError, EmbeddingRateLimited
 from catalog.embedding.factory import get_embedder
 from catalog.filters import FilterError, parse_filters, parse_media_types
 from catalog.layout import GROUPED, build_layout
-from catalog.models import MediaType
-from catalog.search import SearchHit, embed_query, normalize_query, retrieve_by_type
+from catalog.models import Item, MediaType
+from catalog.search import (
+    SearchHit,
+    embed_query,
+    normalize_query,
+    retrieve_by_type,
+    similar_items,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,3 +116,27 @@ def search(request: Request) -> Response:
     else:
         body["results"] = [_result(hit) for hit in layout.hits]
     return Response(body)
+
+
+@api_view(["GET"])
+def item_detail(request: Request, item_id: int) -> Response:
+    item = get_object_or_404(Item, id=item_id)
+    return Response(build_item_detail(item))
+
+
+@api_view(["GET"])
+def item_similar(request: Request, item_id: int) -> Response:
+    item = get_object_or_404(Item, id=item_id)
+    hits = similar_items(item, limit=settings.ITEM_SIMILAR_LIMIT)
+    groups: dict[str, list[SearchHit]] = {}
+    for hit in hits:
+        groups.setdefault(hit.item.media_type, []).append(hit)
+    return Response(
+        {
+            "groups": [
+                {"media_type": media_type, "results": [_result(hit) for hit in groups[media_type]]}
+                for media_type in MediaType.values
+                if media_type in groups
+            ]
+        }
+    )

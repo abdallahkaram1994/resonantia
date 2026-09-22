@@ -139,3 +139,28 @@ def retrieve_by_type(
             hits = [replace(hit, standout=(hit.score - mean) / spread) for hit in hits]
         pools[media_type] = hits
     return pools
+
+
+def similar_items(item: Item, *, limit: int) -> list[SearchHit]:
+    """The nearest items to one item's own stored vector, excluding itself: one pgvector query
+    across every media type (SPEC section 8, "More like this"). The caller groups the results by
+    type; this makes no external calls.
+
+    Only vectors made by the same model and dimension as the item's own stored vector are
+    compared, so this still makes sense for an item embedded by an older model. Empty when the
+    item has no vector yet.
+    """
+    if item.embedding is None:
+        return []
+    rows = (
+        Item.objects.exclude(id=item.id)
+        .filter(
+            embedding__isnull=False,
+            embedding_model=item.embedding_model,
+            embedding_dim=item.embedding_dim,
+        )
+        .only("id", "media_type", "title", "release_year", "cover_url")
+        .annotate(distance=CosineDistance("embedding", list(item.embedding)))
+        .order_by("distance", "id")[:limit]
+    )
+    return [SearchHit(item=row, score=1.0 - row.distance) for row in rows]

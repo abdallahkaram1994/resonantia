@@ -145,6 +145,11 @@ SEARCH_CANDIDATES_PER_TYPE = env_int("SEARCH_CANDIDATES_PER_TYPE", 50)
 # In a blended list, the slots every media type with matches is guaranteed (0 turns this off).
 SEARCH_BLEND_MIN_SLOTS = env_int("SEARCH_BLEND_MIN_SLOTS", 2, minimum=0)
 
+# --- Item detail page ---
+# Total items returned by "more like this": one pgvector query across every media type, then
+# grouped for display.
+ITEM_SIMILAR_LIMIT = env_int("ITEM_SIMILAR_LIMIT", 12)
+
 # Film catalog (TMDB). Non-commercial use only; TMDB data must be refreshed within 6 months.
 TMDB_READ_ACCESS_TOKEN = os.environ.get("TMDB_READ_ACCESS_TOKEN", "").strip()
 TMDB_REQUESTS_PER_SECOND = env_int("TMDB_REQUESTS_PER_SECOND", 20)

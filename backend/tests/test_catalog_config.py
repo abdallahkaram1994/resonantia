@@ -340,3 +340,17 @@ def test_a_pool_exactly_as_large_as_the_lists_is_fine() -> None:
         SEARCH_CANDIDATES_PER_TYPE=15, SEARCH_RESULT_LIMIT=15, SEARCH_GROUP_LIMIT=10
     ):
         assert "catalog.E005" not in check_ids()
+
+
+def test_item_similar_limit_has_a_sensible_default() -> None:
+    result = load_settings_value("ITEM_SIMILAR_LIMIT", {})
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "12"
+
+
+def test_item_similar_limit_rejects_bad_values() -> None:
+    result = load_settings_value("ITEM_SIMILAR_LIMIT", {"ITEM_SIMILAR_LIMIT": "0"})
+
+    assert result.returncode != 0
+    assert "ITEM_SIMILAR_LIMIT" in result.stderr
