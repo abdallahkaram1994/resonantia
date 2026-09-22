@@ -194,6 +194,10 @@ export type ItemDetail = {
   summary: string;
   details: ItemDetails;
   scores: ItemScore[];
+  // Why this item matches the search it was opened from, one short sentence. Only ever present
+  // when the request itself carried `?q=` (see getItem) — the backend never reranks or explains
+  // during search itself, only lazily when an item is actually opened (SPEC section 7.1).
+  explanation: string | null;
 };
 
 function stringArray(value: unknown): string[] {
@@ -236,7 +240,7 @@ function parseItemDetail(data: unknown): ItemDetail | null {
   if (!isRecord(data) || typeof data.id !== "number" || !isMediaType(data.media_type)) {
     return null;
   }
-  const { id, media_type, title, release_year, cover_url, summary, scores } = data;
+  const { id, media_type, title, release_year, cover_url, summary, scores, explanation } = data;
   return {
     id,
     mediaType: media_type,
@@ -248,6 +252,7 @@ function parseItemDetail(data: unknown): ItemDetail | null {
     scores: Array.isArray(scores)
       ? scores.map(parseScore).filter((s): s is ItemScore => s !== null)
       : [],
+    explanation: typeof explanation === "string" ? explanation : null,
   };
 }
 
@@ -262,8 +267,19 @@ async function getItemJson(path: string, signal?: AbortSignal): Promise<unknown>
   return readJson(response);
 }
 
-export async function getItem(id: number, signal?: AbortSignal): Promise<ItemDetail> {
-  const detail = parseItemDetail(await getItemJson(`/api/items/${id}/`, signal));
+export type GetItemOptions = {
+  // The search the visitor arrived from, if any. Passed through as `?q=` so the backend can
+  // lazily generate a one-sentence match explanation (SPEC section 7.1); left out entirely for
+  // an item opened any other way (browsing "more like this", a direct link), which gets none.
+  query?: string;
+  signal?: AbortSignal;
+};
+
+export async function getItem(id: number, options: GetItemOptions = {}): Promise<ItemDetail> {
+  const path = options.query
+    ? `/api/items/${id}/?${new URLSearchParams({ q: options.query })}`
+    : `/api/items/${id}/`;
+  const detail = parseItemDetail(await getItemJson(path, options.signal));
   if (detail === null) throw new SearchError("unavailable", UNAVAILABLE);
   return detail;
 }

@@ -38,6 +38,60 @@ test("fetches the detail and the similar items for the given id", async () => {
   expect(urls).toContain("/api/items/42/similar/");
 });
 
+// --- match explanations (?q=, SPEC section 7.1/8) --------------------------------------------
+
+test("an explanation is shown when the item was opened from a search", async () => {
+  stubItem(rawItemDetail({ explanation: "Both follow a lonely night drive through the rain." }));
+
+  render(<ItemPage id={1} query="a rainy night drive" />);
+
+  expect(
+    await screen.findByText("Both follow a lonely night drive through the rain."),
+  ).toBeInTheDocument();
+});
+
+test("the query is sent to the backend as ?q=", async () => {
+  const fetchMock = stubItem(rawItemDetail());
+
+  render(<ItemPage id={1} query="a rainy night drive" />);
+  await screen.findByRole("heading", { name: "The Film" });
+
+  const detailCall = fetchMock.mock.calls.find((c) => !String(c[0]).includes("/similar/"));
+  expect(new URL(String(detailCall?.[0]), "http://localhost").searchParams.get("q")).toBe(
+    "a rainy night drive",
+  );
+});
+
+test("with no query prop, nothing extra is shown and no q is sent", async () => {
+  const fetchMock = stubItem(rawItemDetail());
+
+  render(<ItemPage id={1} />);
+  await screen.findByRole("heading", { name: "The Film" });
+
+  const detailCall = fetchMock.mock.calls.find((c) => !String(c[0]).includes("/similar/"));
+  expect(String(detailCall?.[0])).toBe("/api/items/1/");
+});
+
+test("a missing explanation from the backend shows nothing extra", async () => {
+  stubItem(rawItemDetail());
+
+  render(<ItemPage id={1} query="a rainy night drive" />);
+
+  await screen.findByRole("heading", { name: "The Film" });
+  expect(screen.queryByText(/./, { selector: "p.italic" })).not.toBeInTheDocument();
+});
+
+test("more like this links carry no query: those items were not reached by a search", async () => {
+  stubItem(rawItemDetail({ explanation: "x" }), [
+    { media_type: "film", results: [rawFilm(2)] },
+  ]);
+
+  render(<ItemPage id={1} query="a rainy night drive" />);
+  await screen.findByRole("heading", { name: "More like this" });
+
+  expect(screen.getByRole("link", { name: /Film 2/ })).toHaveAttribute("href", "/item/2");
+});
+
 test("a missing year is shown as unknown", async () => {
   stubItem(rawItemDetail({ release_year: null }));
 

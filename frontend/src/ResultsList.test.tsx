@@ -39,6 +39,22 @@ test("a single layout is headed by the one type and the query", () => {
   expect(screen.getByText("Item 1")).toBeInTheDocument();
 });
 
+test.each([
+  ["single", single([result(1)])],
+  ["blended", blended([result(1)])],
+  ["grouped", grouped([{ mediaType: "film", results: [result(1)] }])],
+])(
+  "a %s layout links each result to its detail page with the search's own query",
+  (_name, response) => {
+    render(<ResultsList response={response} singleType="film" />);
+
+    expect(screen.getByRole("link", { name: /Item 1/ })).toHaveAttribute(
+      "href",
+      "/item/1?q=x",
+    );
+  },
+);
+
 test("no results in a single layout gets a type-specific message", () => {
   render(<ResultsList response={single([])} singleType="album" />);
 

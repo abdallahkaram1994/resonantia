@@ -301,6 +301,37 @@ test("a 404 is a not-found error", async () => {
   expect(error.message).toBe("That item could not be found.");
 });
 
+test("no query means no q param, and no explanation field at all", async () => {
+  const fetchMock = stubFetch(() => Promise.resolve(jsonResponse(rawItemDetail())));
+
+  const item = await getItem(1);
+
+  expect(fetchMock).toHaveBeenCalledWith("/api/items/1/", { signal: undefined });
+  expect(item.explanation).toBeNull();
+});
+
+test("a query is sent as ?q= and a string explanation is parsed", async () => {
+  const fetchMock = stubFetch(() =>
+    Promise.resolve(jsonResponse(rawItemDetail({ explanation: "Both are moody night drives." }))),
+  );
+
+  const item = await getItem(1, { query: "a rainy night drive" });
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/items/1/?q=a+rainy+night+drive",
+    expect.objectContaining({}),
+  );
+  expect(item.explanation).toBe("Both are moody night drives.");
+});
+
+test("a non-string explanation is dropped rather than shown", async () => {
+  stubFetch(() => Promise.resolve(jsonResponse(rawItemDetail({ explanation: 5 }))));
+
+  const item = await getItem(1, { query: "x" });
+
+  expect(item.explanation).toBeNull();
+});
+
 test("an item detail cover is dropped when it is on the wrong host for its type", async () => {
   stubFetch(() =>
     Promise.resolve(

@@ -50,7 +50,7 @@ export default function ResultsList({
               describing the mood in different words.
             </EmptyMessage>
           ) : (
-            <Grid results={response.results} />
+            <Grid results={response.results} query={query} />
           )}
         </>
       )}
@@ -63,7 +63,7 @@ export default function ResultsList({
               Nothing matched that yet. Try describing the mood in different words.
             </EmptyMessage>
           ) : (
-            <Grid results={response.results} showBadge />
+            <Grid results={response.results} showBadge query={query} />
           )}
         </>
       )}
@@ -82,7 +82,7 @@ export default function ResultsList({
                     No {TYPE_LABEL_LOWER[group.mediaType]} matched that yet.
                   </EmptyMessage>
                 ) : (
-                  <Grid results={group.results} />
+                  <Grid results={group.results} query={query} />
                 )}
               </section>
             ))}
@@ -96,14 +96,19 @@ export default function ResultsList({
 export function Grid({
   results,
   showBadge = false,
+  query,
 }: {
   results: SearchResult[];
   showBadge?: boolean;
+  // See ResultCard: the search these results came from, so their detail pages can show a match
+  // explanation. Left out entirely for results with no originating search (ItemPage's "more like
+  // this" calls Grid with no query, so those links carry none).
+  query?: string;
 }) {
   return (
     <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-5">
       {results.map((result) => (
-        <ResultCard key={result.id} result={result} showBadge={showBadge} />
+        <ResultCard key={result.id} result={result} showBadge={showBadge} query={query} />
       ))}
     </ul>
   );

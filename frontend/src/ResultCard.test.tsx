@@ -27,6 +27,20 @@ test("renders the cover, title and year, linked to the item's detail page", () =
   expect(screen.getByText("2001")).toBeInTheDocument();
 });
 
+test("the link carries the search query as ?q=, so the detail page can explain the match", () => {
+  render(<ResultCard result={film()} query="a rainy night drive" />);
+
+  const link = screen.getByRole("link", { name: /The Film/ });
+  expect(link).toHaveAttribute("href", "/item/1?q=a+rainy+night+drive");
+});
+
+test("with no query, the link carries no q param at all", () => {
+  render(<ResultCard result={film()} />);
+
+  const link = screen.getByRole("link", { name: /The Film/ });
+  expect(link).toHaveAttribute("href", "/item/1");
+});
+
 test("a cover is fitted inside its box, never cropped to fill it", () => {
   // A source image's real proportions do not always match its type's usual box (an IGDB cover
   // especially can be almost any shape); object-cover would zoom into the middle and lose part

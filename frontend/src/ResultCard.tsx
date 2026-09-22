@@ -22,16 +22,24 @@ export const BADGE: Record<MediaType, string> = { film: "Film", game: "Game", al
 export default function ResultCard({
   result,
   showBadge = false,
+  query,
 }: {
   result: SearchResult;
   showBadge?: boolean;
+  // The search this result came from, if any. Carried into the item's link as `?q=` so its
+  // detail page can show a match explanation (see api.ts's getItem); left out for a result with
+  // no originating search, such as "more like this" on another item's page.
+  query?: string;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
   const showCover = result.coverUrl !== null && !imageFailed;
+  const to = query
+    ? `/item/${result.id}?${new URLSearchParams({ q: query })}`
+    : `/item/${result.id}`;
 
   return (
     <li className="flex flex-col gap-2">
-      <Link to={`/item/${result.id}`} className="flex flex-col gap-2">
+      <Link to={to} className="flex flex-col gap-2">
         <div
           className={`relative overflow-hidden rounded-md bg-gray-200 ${ASPECT[result.mediaType]}`}
         >

@@ -119,13 +119,13 @@ type Outcome =
   | { id: number; kind: "error"; message: string; notFound: boolean }
   | { id: number; kind: "ready"; item: ItemDetail; similar: ResultGroup[] };
 
-export default function ItemPage({ id }: { id: number }) {
+export default function ItemPage({ id, query }: { id: number; query?: string }) {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
-    getItem(id, controller.signal).then(
+    getItem(id, { query, signal: controller.signal }).then(
       (item) => {
         if (controller.signal.aborted) return;
         getSimilarItems(id, controller.signal).then(
@@ -150,7 +150,7 @@ export default function ItemPage({ id }: { id: number }) {
       },
     );
     return () => controller.abort();
-  }, [id, retryToken]);
+  }, [id, query, retryToken]);
 
   // A newer id (a "more like this" click while this page was still loading) makes a stale
   // outcome's answer invalid, the same way SearchPage guards against a slow, superseded search.
@@ -196,6 +196,10 @@ export default function ItemPage({ id }: { id: number }) {
               </p>
               <h2 className="text-2xl font-semibold">{state.item.title}</h2>
               <p className="text-sm text-gray-500">{state.item.releaseYear ?? "Year unknown"}</p>
+
+              {state.item.explanation && (
+                <p className="mt-2 text-sm italic text-gray-600">{state.item.explanation}</p>
+              )}
 
               {state.item.scores.length > 0 && (
                 <ul className="mt-2 text-sm text-gray-700">
