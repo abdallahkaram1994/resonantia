@@ -10,6 +10,38 @@ export default function Footer() {
       </a>
       <p>Film data and posters come from TMDB.</p>
       <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+      <p>
+        Game data and covers are from{" "}
+        <a href="https://www.igdb.com/" target="_blank" rel="noreferrer" className="underline">
+          IGDB.com
+        </a>
+        .
+      </p>
+      <p>
+        Album tags are from{" "}
+        <a href="https://www.last.fm/" target="_blank" rel="noreferrer" className="underline">
+          Last.fm
+        </a>{" "}
+        (powered by AudioScrobbler), album details from{" "}
+        <a
+          href="https://musicbrainz.org/"
+          target="_blank"
+          rel="noreferrer"
+          className="underline"
+        >
+          MusicBrainz
+        </a>
+        , and covers from the{" "}
+        <a
+          href="https://coverartarchive.org/"
+          target="_blank"
+          rel="noreferrer"
+          className="underline"
+        >
+          Cover Art Archive
+        </a>
+        .
+      </p>
     </footer>
   );
 }

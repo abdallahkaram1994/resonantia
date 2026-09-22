@@ -346,7 +346,7 @@ def test_item_similar_limit_has_a_sensible_default() -> None:
     result = load_settings_value("ITEM_SIMILAR_LIMIT", {})
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "12"
+    assert result.stdout.strip() == "10"
 
 
 def test_item_similar_limit_rejects_bad_values() -> None:

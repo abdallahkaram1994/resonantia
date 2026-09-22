@@ -1,37 +1,75 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { search, SearchError } from "./api";
-import type { SearchResult } from "./api";
-import ResultCard from "./ResultCard";
+import type { Era, MediaType, SearchResponse } from "./api";
+import ResultsList from "./ResultsList";
+import SearchFilters, { ALL_TYPES } from "./SearchFilters";
 
 const MAX_QUERY_LENGTH = 200;
 
-type SearchRequest = { query: string; id: number };
+type SearchRequest = { query: string; types: MediaType[]; eras: Era[]; id: number };
 type Outcome =
-  | { requestId: number; kind: "results"; results: SearchResult[] }
+  | { requestId: number; kind: "response"; response: SearchResponse }
   | { requestId: number; kind: "error"; message: string };
 
-function queryFromUrl(): string {
-  return (new URLSearchParams(window.location.search).get("q") ?? "").trim();
+function parseTypes(raw: string | null): MediaType[] {
+  if (!raw) return ALL_TYPES;
+  const chosen = raw
+    .split(",")
+    .map((t) => t.trim().toLowerCase())
+    .filter((t): t is MediaType => (ALL_TYPES as string[]).includes(t));
+  return chosen.length > 0 ? ALL_TYPES.filter((t) => chosen.includes(t)) : ALL_TYPES;
 }
 
-function urlFor(query: string): string {
-  return query ? `/search?q=${encodeURIComponent(query)}` : "/";
+function parseEras(raw: string | null): Era[] {
+  if (!raw) return [];
+  const eras: Era[] = [];
+  for (const part of raw.split(",")) {
+    const match = /^(\d{4})-(\d{4})$/.exec(part.trim());
+    if (match) eras.push({ start: Number(match[1]), end: Number(match[2]) });
+  }
+  return eras;
+}
+
+function fromUrl(): { query: string; types: MediaType[]; eras: Era[] } {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    query: (params.get("q") ?? "").trim(),
+    types: parseTypes(params.get("types")),
+    eras: parseEras(params.get("eras")),
+  };
+}
+
+// Every type enabled is the default, so it is left out of the URL entirely for a clean address.
+function urlFor(query: string, types: MediaType[], eras: Era[]): string {
+  if (!query) return "/";
+  const params = new URLSearchParams({ q: query });
+  if (types.length < ALL_TYPES.length) params.set("types", types.join(","));
+  if (eras.length > 0) params.set("eras", eras.map((e) => `${e.start}-${e.end}`).join(","));
+  return `/search?${params.toString()}`;
 }
 
 export default function SearchPage() {
-  const [input, setInput] = useState(queryFromUrl);
-  const [request, setRequest] = useState<SearchRequest>(() => ({ query: queryFromUrl(), id: 0 }));
+  const [input, setInput] = useState(() => fromUrl().query);
+  const [types, setTypes] = useState<MediaType[]>(() => fromUrl().types);
+  const [eras, setEras] = useState<Era[]>(() => fromUrl().eras);
+  const [request, setRequest] = useState<SearchRequest>(() => ({ ...fromUrl(), id: 0 }));
   const [outcome, setOutcome] = useState<Outcome | null>(null);
 
   useEffect(() => {
     if (!request.query) return;
     const controller = new AbortController();
-    search(request.query, controller.signal).then(
+    search(request.query, {
+      // Every type enabled is the backend's own default too, so leaving it out keeps both the
+      // request and the URL clean.
+      types: request.types.length < ALL_TYPES.length ? request.types : undefined,
+      eras: request.eras,
+      signal: controller.signal,
+    }).then(
       (response) => {
         // A newer search has replaced this one, so its late answer must not overwrite the page.
         if (controller.signal.aborted) return;
-        setOutcome({ requestId: request.id, kind: "results", results: response.results });
+        setOutcome({ requestId: request.id, kind: "response", response });
       },
       (error: unknown) => {
         if (controller.signal.aborted) return;
@@ -48,9 +86,11 @@ export default function SearchPage() {
 
   useEffect(() => {
     const onPopState = () => {
-      const query = queryFromUrl();
-      setInput(query);
-      setRequest((current) => ({ query, id: current.id + 1 }));
+      const next = fromUrl();
+      setInput(next.query);
+      setTypes(next.types);
+      setEras(next.eras);
+      setRequest((current) => ({ ...next, id: current.id + 1 }));
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -60,12 +100,29 @@ export default function SearchPage() {
     event.preventDefault();
     const query = input.trim();
     if (!query) return;
-    window.history.pushState(null, "", urlFor(query));
-    setRequest((current) => ({ query, id: current.id + 1 }));
+    window.history.pushState(null, "", urlFor(query, types, eras));
+    setRequest((current) => ({ query, types, eras, id: current.id + 1 }));
+  }
+
+  // A filter change re-runs the search immediately (SPEC section 7.2): the query embedding is
+  // cached, so this costs no extra provider quota. It replaces the current history entry rather
+  // than adding one, so the back button steps through searches, not every filter click.
+  function updateTypes(next: MediaType[]) {
+    setTypes(next);
+    if (!request.query) return;
+    window.history.replaceState(null, "", urlFor(request.query, next, eras));
+    setRequest((current) => ({ ...current, types: next, id: current.id + 1 }));
+  }
+
+  function updateEras(next: Era[]) {
+    setEras(next);
+    if (!request.query) return;
+    window.history.replaceState(null, "", urlFor(request.query, types, next));
+    setRequest((current) => ({ ...current, eras: next, id: current.id + 1 }));
   }
 
   function retry() {
-    setRequest((current) => ({ query: current.query, id: current.id + 1 }));
+    setRequest((current) => ({ ...current, id: current.id + 1 }));
   }
 
   const searched = request.query !== "";
@@ -109,6 +166,8 @@ export default function SearchPage() {
         </a>
       </p>
 
+      <SearchFilters types={types} eras={eras} onTypesChange={updateTypes} onErasChange={updateEras} />
+
       <div className="mt-6">
         {loading && <p role="status">Searching…</p>}
 
@@ -121,21 +180,11 @@ export default function SearchPage() {
           </div>
         )}
 
-        {current?.kind === "results" && current.results.length === 0 && (
-          <p role="status">
-            No films matched that yet. Try describing the mood in different words.
-          </p>
-        )}
-
-        {current?.kind === "results" && current.results.length > 0 && (
-          <>
-            <h2 className="mb-4 text-sm text-gray-500">Films for “{request.query}”</h2>
-            <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-5">
-              {current.results.map((result) => (
-                <ResultCard key={result.id} result={result} />
-              ))}
-            </ul>
-          </>
+        {current?.kind === "response" && (
+          <ResultsList
+            response={current.response}
+            singleType={request.types.length === 1 ? request.types[0] : null}
+          />
         )}
       </div>
     </section>
