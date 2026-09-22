@@ -25,8 +25,13 @@ from catalog.textsearch import text_retrieve_by_type
 
 logger = logging.getLogger(__name__)
 
-# Types searched when the request does not choose (`types=`): all of them.
-DEFAULT_MEDIA_TYPES = tuple(MediaType.values)
+# Types searched when the request does not choose (`types=`). Albums are left out of the default:
+# a small number of albums sit disproportionately close to many unrelated queries in the shared
+# embedding space ("hubness" in high-dimensional nearest-neighbor search), confirmed on the real
+# catalog (one album was the nearest album match for 20% of a 500-film sample, unrelated to what
+# any of those films were about), which crowded out legitimate album matches in blended results.
+# Albums are still fully searchable with `types=album`; see the SPEC decision log.
+DEFAULT_MEDIA_TYPES = (MediaType.FILM, MediaType.GAME)
 
 MODE_VIBE = "vibe"
 MODE_TEXT = "text"

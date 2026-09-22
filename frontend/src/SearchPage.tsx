@@ -3,7 +3,7 @@ import type { FormEvent } from "react";
 import { search, SearchError } from "./api";
 import type { Era, MediaType, SearchResponse } from "./api";
 import ResultsList from "./ResultsList";
-import SearchFilters, { ALL_TYPES } from "./SearchFilters";
+import SearchFilters, { ALL_TYPES, DEFAULT_TYPES } from "./SearchFilters";
 
 const MAX_QUERY_LENGTH = 200;
 
@@ -12,13 +12,17 @@ type Outcome =
   | { requestId: number; kind: "response"; response: SearchResponse }
   | { requestId: number; kind: "error"; message: string };
 
+function sameTypes(a: MediaType[], b: MediaType[]): boolean {
+  return a.length === b.length && a.every((t, i) => t === b[i]);
+}
+
 function parseTypes(raw: string | null): MediaType[] {
-  if (!raw) return ALL_TYPES;
+  if (!raw) return DEFAULT_TYPES;
   const chosen = raw
     .split(",")
     .map((t) => t.trim().toLowerCase())
     .filter((t): t is MediaType => (ALL_TYPES as string[]).includes(t));
-  return chosen.length > 0 ? ALL_TYPES.filter((t) => chosen.includes(t)) : ALL_TYPES;
+  return chosen.length > 0 ? ALL_TYPES.filter((t) => chosen.includes(t)) : DEFAULT_TYPES;
 }
 
 function parseEras(raw: string | null): Era[] {
@@ -40,11 +44,11 @@ function fromUrl(): { query: string; types: MediaType[]; eras: Era[] } {
   };
 }
 
-// Every type enabled is the default, so it is left out of the URL entirely for a clean address.
+// The default types are left out of the URL entirely, for a clean address.
 function urlFor(query: string, types: MediaType[], eras: Era[]): string {
   if (!query) return "/";
   const params = new URLSearchParams({ q: query });
-  if (types.length < ALL_TYPES.length) params.set("types", types.join(","));
+  if (!sameTypes(types, DEFAULT_TYPES)) params.set("types", types.join(","));
   if (eras.length > 0) params.set("eras", eras.map((e) => `${e.start}-${e.end}`).join(","));
   return `/search?${params.toString()}`;
 }
@@ -60,9 +64,9 @@ export default function SearchPage() {
     if (!request.query) return;
     const controller = new AbortController();
     search(request.query, {
-      // Every type enabled is the backend's own default too, so leaving it out keeps both the
+      // The default types are the backend's own default too, so leaving it out keeps both the
       // request and the URL clean.
-      types: request.types.length < ALL_TYPES.length ? request.types : undefined,
+      types: sameTypes(request.types, DEFAULT_TYPES) ? undefined : request.types,
       eras: request.eras,
       signal: controller.signal,
     }).then(

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import type { Era, MediaType } from "./api";
-import SearchFilters from "./SearchFilters";
+import SearchFilters, { DEFAULT_TYPES } from "./SearchFilters";
 
 function setup(types: MediaType[] = ["film", "game", "album"], eras: Era[] = []) {
   const onTypesChange = vi.fn();
@@ -17,12 +17,27 @@ function setup(types: MediaType[] = ["film", "game", "album"], eras: Era[] = [])
   return { onTypesChange, onErasChange };
 }
 
-test("every type is checked by default", () => {
+test("every type is checked when given, regardless of what the app treats as default", () => {
   setup();
 
   expect(screen.getByRole("checkbox", { name: "Films" })).toBeChecked();
   expect(screen.getByRole("checkbox", { name: "Games" })).toBeChecked();
   expect(screen.getByRole("checkbox", { name: "Albums" })).toBeChecked();
+});
+
+test("the app's default types are films and games, not albums", () => {
+  // Albums are left out of the default: a small number of them sit disproportionately close to
+  // many unrelated queries in the shared embedding space ("hubness"), confirmed on the real
+  // catalog. Still fully searchable by checking the box back on.
+  expect(DEFAULT_TYPES).toEqual(["film", "game"]);
+});
+
+test("with the default types, only films and games are checked", () => {
+  setup(DEFAULT_TYPES);
+
+  expect(screen.getByRole("checkbox", { name: "Films" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Games" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Albums" })).not.toBeChecked();
 });
 
 test("unchecking a type reports the remaining ones", () => {

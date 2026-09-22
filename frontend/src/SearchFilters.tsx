@@ -2,6 +2,12 @@ import type { Era, MediaType } from "./api";
 
 export const ALL_TYPES: MediaType[] = ["film", "game", "album"];
 
+// Albums are switched off by default: a small number of them sit disproportionately close to
+// many unrelated queries in the shared embedding space ("hubness"), confirmed on the real catalog
+// (one album was the nearest album match for 20% of a 500-film sample), crowding out legitimate
+// album matches in blended results. Still fully searchable by checking the box back on.
+export const DEFAULT_TYPES: MediaType[] = ["film", "game"];
+
 const TYPE_LABELS: Record<MediaType, string> = { film: "Films", game: "Games", album: "Albums" };
 
 // SPEC section 7.2: decade chips. Labels match the SPEC's own shorthand ("80s, 90s, 00s…").

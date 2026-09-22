@@ -41,7 +41,7 @@ test("starts idle with the search box, the data-use notice, and every type enabl
   expect(terms).toHaveAttribute("rel", expect.stringContaining("noreferrer"));
   expect(screen.getByRole("checkbox", { name: "Films" })).toBeChecked();
   expect(screen.getByRole("checkbox", { name: "Games" })).toBeChecked();
-  expect(screen.getByRole("checkbox", { name: "Albums" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Albums" })).not.toBeChecked();
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
   expect(fetchMock).not.toHaveBeenCalled();
 });
@@ -208,9 +208,22 @@ test("toggling a type after searching re-runs the search and updates the url", a
   fireEvent.click(screen.getByRole("checkbox", { name: "Games" }));
 
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-  expect(urlOf(fetchMock, 1).searchParams.get("types")).toBe("film,album");
-  expect(new URLSearchParams(window.location.search).get("types")).toBe("film,album");
+  expect(urlOf(fetchMock, 1).searchParams.get("types")).toBe("film");
+  expect(new URLSearchParams(window.location.search).get("types")).toBe("film");
   expect(window.location.pathname).toBe("/search");
+});
+
+test("checking albums back on includes them in the request and the url", async () => {
+  const fetchMock = okWith(rawFilm(1));
+  render(<SearchPage />);
+  search("x");
+  await screen.findByText("Film 1");
+
+  fireEvent.click(screen.getByRole("checkbox", { name: "Albums" }));
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  expect(urlOf(fetchMock, 1).searchParams.get("types")).toBe("film,game,album");
+  expect(new URLSearchParams(window.location.search).get("types")).toBe("film,game,album");
 });
 
 test("toggling a type before any search does not fetch anything", () => {
@@ -243,7 +256,7 @@ test("a filter change replaces the history entry rather than adding one", async 
   const before = window.history.length;
 
   fireEvent.click(screen.getByRole("checkbox", { name: "Games" }));
-  await waitFor(() => expect(new URLSearchParams(window.location.search).get("types")).toBe("film,album"));
+  await waitFor(() => expect(new URLSearchParams(window.location.search).get("types")).toBe("film"));
 
   expect(window.history.length).toBe(before);
 });

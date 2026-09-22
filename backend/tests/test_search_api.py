@@ -290,10 +290,13 @@ def add_one_of_each(year: int | None = 2001) -> None:
     add_item("The Album", vec(1.0), media_type=MediaType.ALBUM, year=year)
 
 
-def test_every_type_is_searched_when_no_types_are_chosen(client: Client) -> None:
+def test_the_default_types_are_films_and_games_not_albums(client: Client) -> None:
+    # Albums are left out of the default: a small number of them sit disproportionately close to
+    # many unrelated queries in the shared embedding space ("hubness"), confirmed on the real
+    # catalog, and crowd out legitimate album matches. Still fully searchable with types=album.
     add_one_of_each()
 
-    assert set(titles(search(client, "x"))) == {"The Film", "The Game", "The Album"}
+    assert set(titles(search(client, "x"))) == {"The Film", "The Game"}
 
 
 @pytest.mark.parametrize(
@@ -416,7 +419,7 @@ def test_one_chosen_type_is_a_single_list(client: Client) -> None:
 def test_several_types_without_a_named_type_are_blended(client: Client) -> None:
     add_one_of_each()
 
-    body = search(client, "x").json()
+    body = search(client, "x", types="film,game,album").json()
 
     assert body["layout"] == "blended"
     assert {r["media_type"] for r in body["results"]} == {"film", "game", "album"}
@@ -432,7 +435,7 @@ def test_a_blended_list_keeps_every_type_even_when_one_type_scores_far_higher(
         add_item(f"Game {i}", vec(1.0, 1.0 + i), media_type=MediaType.GAME)  # much further away
         add_item(f"Album {i}", vec(1.0, 2.0 + i), media_type=MediaType.ALBUM)
 
-    body = search(client, "x").json()
+    body = search(client, "x", types="film,game,album").json()
 
     kinds = [r["media_type"] for r in body["results"]]
     assert len(kinds) == 15
@@ -455,7 +458,7 @@ def test_a_standout_match_beats_higher_raw_scores_from_a_type_that_is_close_to_e
     for i in range(20):  # the other albums are far away
         add_item(f"Album {i:02d}", at(80 + i * 0.4), media_type=MediaType.ALBUM)
 
-    body = search(client, "x").json()
+    body = search(client, "x", types="film,game,album").json()
 
     assert body["results"][0]["title"] == "Standout album"
     raw = {r["title"]: r["score"] for r in body["results"]}
@@ -482,7 +485,7 @@ def test_a_blended_list_applies_each_types_filters_within_its_own_pool(client: C
         add_item(f"New {media_type}", vec(1.0, 1.0), media_type=media_type, year=1985)
         add_item(f"Undated {media_type}", vec(1.0), media_type=media_type, year=None)
 
-    body = search(client, "x", eras="1980-1989").json()
+    body = search(client, "x", types="film,game,album", eras="1980-1989").json()
 
     assert {r["title"] for r in body["results"]} == {"New film", "New game", "New album"}
 
@@ -521,7 +524,7 @@ def test_a_query_that_names_a_type_is_grouped_with_that_type_first(client: Clien
     add_one_of_each()
 
     with named("album"):
-        body = search(client, "x").json()
+        body = search(client, "x", types="film,game,album").json()
 
     assert body["layout"] == "grouped"
     assert "results" not in body
