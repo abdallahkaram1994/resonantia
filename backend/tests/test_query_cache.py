@@ -234,13 +234,14 @@ def test_a_cached_query_still_works_when_the_provider_is_down(client: Client) ->
     embedder.embed.assert_not_called()
 
 
-def test_a_new_query_still_reports_the_outage(client: Client) -> None:
+def test_a_new_query_falls_back_to_text_search_and_caches_nothing(client: Client) -> None:
     embedder = StaticEmbedder(vec(1.0))
     embedder.embed = mock.Mock(side_effect=EmbeddingUnavailable("down"))  # type: ignore[method-assign]
 
     response = search(client, embedder)
 
-    assert response.status_code == 503
+    assert response.status_code == 200
+    assert response.json()["mode"] == "text"
     assert QueryEmbedding.objects.count() == 0
 
 

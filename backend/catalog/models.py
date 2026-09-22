@@ -1,5 +1,7 @@
 from collections.abc import Sequence
 
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVector
 from django.db import models
 from django.db.models import Q
 from pgvector.django import VectorField
@@ -44,7 +46,15 @@ class Item(models.Model):
     objects = ItemQuerySet.as_manager()
 
     class Meta:
-        indexes = [models.Index(fields=["media_type"], name="item_media_type_idx")]
+        indexes = [
+            models.Index(fields=["media_type"], name="item_media_type_idx"),
+            # Backs the Postgres full-text fallback (SPEC section 7.5): used only when the
+            # embedding provider is unavailable. `combined_text` already holds the title, genres
+            # or tags, and the summary, so nothing new needs to be tracked for it.
+            GinIndex(
+                SearchVector("combined_text", config="english"), name="item_combined_text_gin"
+            ),
+        ]
         constraints = [
             # A vector is never stored without the model and dimension that produced it.
             models.CheckConstraint(

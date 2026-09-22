@@ -57,6 +57,9 @@ ALLOWED_HOSTS = [
 INSTALLED_APPS = [
     # Procrastinate (the Postgres-backed task queue) must come before the apps that define tasks.
     "procrastinate.contrib.django",
+    # Ships with Django; used for the Postgres full-text fallback search (SPEC section 7.5), not a
+    # new dependency.
+    "django.contrib.postgres",
     "rest_framework",
     "core",
     "catalog",

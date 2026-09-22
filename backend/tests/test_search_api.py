@@ -229,34 +229,41 @@ def test_hostile_looking_queries_are_treated_as_plain_text(client: Client, hosti
         EmbeddingRateLimited("provider-detail: HTTP 429", retry_after=None, quota_exhausted=True),
     ],
 )
-def test_embedding_failures_become_a_generic_503(client: Client, error: Exception) -> None:
+def test_embedding_failures_fall_back_to_text_search_instead_of_failing(
+    client: Client, error: Exception
+) -> None:
+    add_item("Rainy Night", vec(1.0))
     embedder = StaticEmbedder(QUERY_VECTOR)
     embedder.embed = mock.Mock(side_effect=error)  # type: ignore[method-assign]
 
-    response = search(client, "x", embedder)
+    response = search(client, "rainy", embedder, types="film")
 
-    assert response.status_code == 503
+    assert response.status_code == 200
+    body = response.json()
     assert "provider-detail" not in response.content.decode()
-    assert "temporarily unavailable" in response.json()["detail"]
-    assert "Retry-After" not in response
+    assert body["mode"] == "text"
+    assert titles(response) == ["Rainy Night"]
+    assert any("text matches" in notice for notice in body["notices"])
 
 
-def test_a_rate_limited_provider_passes_on_a_retry_hint(client: Client) -> None:
+def test_a_rate_limited_provider_also_falls_back_to_text_search(client: Client) -> None:
     embedder = StaticEmbedder(QUERY_VECTOR)
     limited = EmbeddingRateLimited("limit", retry_after=29.2, quota_exhausted=False)
     embedder.embed = mock.Mock(side_effect=limited)  # type: ignore[method-assign]
 
     response = search(client, "x", embedder)
 
-    assert response.status_code == 503
-    assert response["Retry-After"] == "30"
+    assert response.status_code == 200
+    assert response.json()["mode"] == "text"
+    assert "Retry-After" not in response
 
 
-def test_a_missing_api_key_is_a_503_not_a_crash(client: Client) -> None:
+def test_a_missing_api_key_falls_back_to_text_search_not_a_crash(client: Client) -> None:
     with mock.patch(GET_EMBEDDER, side_effect=ImproperlyConfigured("GEMINI_API_KEY is not set")):
         response = client.get("/api/search/", {"q": "x"})
 
-    assert response.status_code == 503
+    assert response.status_code == 200
+    assert response.json()["mode"] == "text"
     assert "GEMINI_API_KEY" not in response.content.decode()
 
 
@@ -567,3 +574,76 @@ def test_no_request_can_reach_the_grouped_layout_before_the_llm_exists(client: C
         body = search(client, query).json()
         assert body["layout"] == "blended"
         assert "groups" not in body
+
+
+# --- full-text fallback: end to end -------------------------------------------------------------
+
+
+def down(client: Client, query: str, **params: str):
+    embedder = StaticEmbedder(QUERY_VECTOR)
+    embedder.embed = mock.Mock(side_effect=EmbeddingUnavailable("down"))  # type: ignore[method-assign]
+    return search(client, query, embedder, **params)
+
+
+def test_fallback_still_isolates_media_types(client: Client) -> None:
+    add_item("Rainy Film", vec(1.0))
+    add_item("Rainy Game", vec(1.0), media_type=MediaType.GAME)
+
+    body = down(client, "rainy", types="film").json()
+
+    assert body["mode"] == "text"
+    assert titles_body(body) == ["Rainy Film"]
+
+
+def test_fallback_still_applies_the_era_filter(client: Client) -> None:
+    add_item("Rainy Old", vec(1.0), year=1975)
+    add_item("Rainy New", vec(1.0, 1.0), year=1985)
+
+    body = down(client, "rainy", eras="1980-1989").json()
+
+    assert titles_body(body) == ["Rainy New"]
+
+
+def test_a_single_enabled_type_is_a_single_list_in_text_mode_too(client: Client) -> None:
+    add_item("Rainy Film", vec(1.0))
+
+    body = down(client, "rainy", types="film").json()
+
+    assert body["layout"] == "single"
+    assert body["mode"] == "text"
+
+
+def test_several_types_blend_in_text_mode_too(client: Client) -> None:
+    add_item("Rainy Film", vec(1.0))
+    add_item("Rainy Game", vec(1.0), media_type=MediaType.GAME)
+
+    body = down(client, "rainy").json()
+
+    assert body["layout"] == "blended"
+    assert {r["media_type"] for r in body["results"]} == {"film", "game"}
+
+
+def test_a_query_with_no_usable_words_is_an_empty_result_not_an_error(client: Client) -> None:
+    add_item("Rainy Film", vec(1.0))
+
+    body = down(client, "🌧️🌧️🌧️").json()
+
+    assert body["mode"] == "text"
+    assert titles_body(body) == []
+
+
+def test_the_fallback_notice_comes_before_a_layout_notice(client: Client) -> None:
+    add_item("Rainy Film", vec(1.0))
+    add_item("Rainy Album", vec(1.0), media_type=MediaType.ALBUM)
+
+    with named("game"):
+        body = down(client, "rainy", types="film,album").json()
+
+    assert "text matches" in body["notices"][0]
+    assert "games" in body["notices"][1]
+
+
+def titles_body(body: dict) -> list[str]:
+    if "results" in body:
+        return [r["title"] for r in body["results"]]
+    return [r["title"] for g in body["groups"] for r in g["results"]]

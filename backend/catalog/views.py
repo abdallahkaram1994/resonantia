@@ -1,5 +1,4 @@
 import logging
-import math
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -22,21 +21,18 @@ from catalog.search import (
     retrieve_by_type,
     similar_items,
 )
+from catalog.textsearch import text_retrieve_by_type
 
 logger = logging.getLogger(__name__)
 
 # Types searched when the request does not choose (`types=`): all of them.
 DEFAULT_MEDIA_TYPES = tuple(MediaType.values)
 
-
-def _unavailable(retry_after: float | None = None) -> Response:
-    response = Response(
-        {"detail": "Search is temporarily unavailable. Please try again later."},
-        status=status.HTTP_503_SERVICE_UNAVAILABLE,
-    )
-    if retry_after is not None and retry_after > 0:
-        response["Retry-After"] = str(math.ceil(retry_after))
-    return response
+MODE_VIBE = "vibe"
+MODE_TEXT = "text"
+TEXT_FALLBACK_NOTICE = (
+    "Vibe search is temporarily unavailable, so these are text matches on your words instead."
+)
 
 
 def _result(hit: SearchHit) -> dict[str, object]:
@@ -72,28 +68,41 @@ def search(request: Request) -> Response:
     except FilterError as error:
         return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Failures are logged without the query text: searches are anonymous and stay private.
+    # An embedding failure falls back to full-text search rather than failing the request (SPEC
+    # section 7.5). Failures are logged without the query text: searches are anonymous and stay
+    # private.
+    mode = MODE_VIBE
+    vector = None
+    embedder = None
     try:
         embedder = get_embedder()
         vector = embed_query(embedder, query)
     except ImproperlyConfigured as error:
         logger.error("Search is misconfigured: %s", error)
-        return _unavailable()
+        mode = MODE_TEXT
     except EmbeddingRateLimited as error:
         logger.warning("Embedding provider is rate limiting: %s", error)
-        return _unavailable(error.retry_after)
+        mode = MODE_TEXT
     except EmbeddingError as error:
         logger.warning("Embedding failed during search (%s): %s", type(error).__name__, error)
-        return _unavailable()
+        mode = MODE_TEXT
 
-    pools = retrieve_by_type(
-        vector,
-        media_types=media_types,
-        filters=filters,
-        model=embedder.model,
-        dim=embedder.dimensions,
-        limit=settings.SEARCH_CANDIDATES_PER_TYPE,
-    )
+    if mode == MODE_VIBE:
+        pools = retrieve_by_type(
+            vector,
+            media_types=media_types,
+            filters=filters,
+            model=embedder.model,
+            dim=embedder.dimensions,
+            limit=settings.SEARCH_CANDIDATES_PER_TYPE,
+        )
+    else:
+        pools = text_retrieve_by_type(
+            query,
+            media_types=media_types,
+            filters=filters,
+            limit=settings.SEARCH_CANDIDATES_PER_TYPE,
+        )
     # No media type hint yet: the LLM parse that names one arrives in M5.
     layout = build_layout(
         pools,
@@ -102,11 +111,12 @@ def search(request: Request) -> Response:
         group_limit=settings.SEARCH_GROUP_LIMIT,
         min_slots=settings.SEARCH_BLEND_MIN_SLOTS,
     )
+    notices = layout.notices if mode == MODE_VIBE else [TEXT_FALLBACK_NOTICE, *layout.notices]
     body: dict[str, object] = {
         "query": query,
         "layout": layout.kind,
-        "mode": "vibe",
-        "notices": layout.notices,
+        "mode": mode,
+        "notices": notices,
     }
     if layout.kind == GROUPED:
         body["groups"] = [
