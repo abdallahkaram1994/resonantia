@@ -101,6 +101,13 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "").strip() or "gemini-embed
 EMBEDDING_DIM = env_int("EMBEDDING_DIM", 768)
 EMBEDDING_REQUESTS_PER_MINUTE = env_int("EMBEDDING_REQUESTS_PER_MINUTE", 60)
 
+# The LLM (query parsing, section 7.1 step 3; per-item explanations, section 8). Same key and
+# project as the embeddings above, a separate model and quota. Verified live (Sept 2026):
+# gemini-2.5-flash-lite is no longer available to new users; the API itself names this one as its
+# replacement. Free-tier RPM/TPM/RPD are still account-specific — check your own AI Studio.
+GEMINI_LLM_MODEL = os.environ.get("GEMINI_LLM_MODEL", "").strip() or "gemini-3.5-flash-lite"
+LLM_REQUESTS_PER_MINUTE = env_int("LLM_REQUESTS_PER_MINUTE", 10)
+
 # Game catalog (IGDB, through a Twitch app's client credentials). Free for non-commercial use.
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID", "").strip()
 TWITCH_CLIENT_SECRET = os.environ.get("TWITCH_CLIENT_SECRET", "").strip()
