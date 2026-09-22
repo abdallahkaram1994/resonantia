@@ -1,5 +1,7 @@
 from collections.abc import Sequence
 
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVector
 from django.db import models
 from django.db.models import Q
 from pgvector.django import VectorField
@@ -44,7 +46,15 @@ class Item(models.Model):
     objects = ItemQuerySet.as_manager()
 
     class Meta:
-        indexes = [models.Index(fields=["media_type"], name="item_media_type_idx")]
+        indexes = [
+            models.Index(fields=["media_type"], name="item_media_type_idx"),
+            # Backs the Postgres full-text fallback (SPEC section 7.5): used only when the
+            # embedding provider is unavailable. `combined_text` already holds the title, genres
+            # or tags, and the summary, so nothing new needs to be tracked for it.
+            GinIndex(
+                SearchVector("combined_text", config="english"), name="item_combined_text_gin"
+            ),
+        ]
         constraints = [
             # A vector is never stored without the model and dimension that produced it.
             models.CheckConstraint(
@@ -119,6 +129,33 @@ class SkippedRecord(models.Model):
 
     def __str__(self) -> str:
         return f"{self.source}:{self.external_id} ({self.reason})"
+
+
+class QueryEmbedding(models.Model):
+    """A cached embedding of a search query, so repeating a search, or changing a filter on it,
+    does not spend another provider request (the free tier allows about 1,000 a day).
+
+    The key is a hash of the normalized query with the model and dimension, so a different model
+    never gets another model's vector. The query text itself is not stored: searches are anonymous.
+    """
+
+    text_hash = models.CharField(max_length=64)
+    embedding_model = models.CharField(max_length=100)
+    embedding_dim = models.PositiveSmallIntegerField()
+    embedding = VectorField(dimensions=EMBEDDING_DIMENSIONS)
+    # For pruning old rows (M6).
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["text_hash", "embedding_model", "embedding_dim"],
+                name="queryembedding_text_model_dim_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.text_hash[:8]} ({self.embedding_model})"
 
 
 class Score(models.Model):

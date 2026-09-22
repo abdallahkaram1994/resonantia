@@ -1,0 +1,12 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [{"text": "{\"explanation\": \"Both follow a lonely drive through a rain-soaked city at night.\"}"}]
+      },
+      "finishReason": "STOP"
+    }
+  ],
+  "usageMetadata": {"promptTokenCount": 120, "candidatesTokenCount": 20}
+}

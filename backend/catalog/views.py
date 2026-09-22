@@ -1,32 +1,56 @@
 import logging
-import math
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from catalog.detail import item_detail as build_item_detail
 from catalog.embedding.base import EmbeddingError, EmbeddingRateLimited
 from catalog.embedding.factory import get_embedder
-from catalog.models import MediaType
-from catalog.search import normalize_query, retrieve
+from catalog.filters import FilterError, parse_filters, parse_media_types
+from catalog.layout import GROUPED, build_layout
+from catalog.llm.base import LLMError
+from catalog.llm.factory import get_llm
+from catalog.models import Item, MediaType
+from catalog.search import (
+    SearchHit,
+    embed_query,
+    normalize_query,
+    retrieve_by_type,
+    similar_items,
+)
+from catalog.textsearch import text_retrieve_by_type
 
 logger = logging.getLogger(__name__)
 
-# The catalog holds films only for now; media type toggles arrive with the filter registry (M4).
-SEARCH_MEDIA_TYPES = (MediaType.FILM,)
+# Types searched when the request does not choose (`types=`). Albums are left out of the default:
+# a small number of albums sit disproportionately close to many unrelated queries in the shared
+# embedding space ("hubness" in high-dimensional nearest-neighbor search), confirmed on the real
+# catalog (one album was the nearest album match for 20% of a 500-film sample, unrelated to what
+# any of those films were about), which crowded out legitimate album matches in blended results.
+# Albums are still fully searchable with `types=album`; see the SPEC decision log.
+DEFAULT_MEDIA_TYPES = (MediaType.FILM, MediaType.GAME)
+
+MODE_VIBE = "vibe"
+MODE_TEXT = "text"
+TEXT_FALLBACK_NOTICE = (
+    "Vibe search is temporarily unavailable, so these are text matches on your words instead."
+)
 
 
-def _unavailable(retry_after: float | None = None) -> Response:
-    response = Response(
-        {"detail": "Search is temporarily unavailable. Please try again later."},
-        status=status.HTTP_503_SERVICE_UNAVAILABLE,
-    )
-    if retry_after is not None and retry_after > 0:
-        response["Retry-After"] = str(math.ceil(retry_after))
-    return response
+def _result(hit: SearchHit) -> dict[str, object]:
+    return {
+        "id": hit.item.id,
+        "media_type": hit.item.media_type,
+        "title": hit.item.title,
+        "release_year": hit.item.release_year,
+        "cover_url": hit.item.cover_url,
+        "score": round(hit.score, 4),
+    }
 
 
 @api_view(["GET"])
@@ -44,40 +68,126 @@ def search(request: Request) -> Response:
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Failures are logged without the query text: searches are anonymous and stay private.
+    # Bad filter values are refused before the embedder is called, so they cost no quota.
+    try:
+        media_types = parse_media_types(request.query_params, DEFAULT_MEDIA_TYPES)
+        filters = parse_filters(request.query_params)
+    except FilterError as error:
+        return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Parse the query into a cleaner vibe text and an optional media-type hint (SPEC section 7.1
+    # step 3). A failure here is silent, not a "mode" the visitor is told about: it just leaves
+    # vibe_text as the raw query and hint as None, and normal vibe search still proceeds. Failures
+    # are logged without the query text: searches are anonymous and stay private.
+    vibe_text = query
+    hint: str | None = None
+    try:
+        parsed = get_llm().parse_query(query)
+        vibe_text = parsed.vibe_text
+        hint = parsed.media_type_hint
+    except ImproperlyConfigured as error:
+        logger.error("Search is misconfigured (LLM): %s", error)
+    except LLMError as error:
+        logger.warning("Query parsing failed (%s): %s", type(error).__name__, error)
+
+    # An embedding failure falls back to full-text search rather than failing the request (SPEC
+    # section 7.5).
+    mode = MODE_VIBE
+    vector = None
+    embedder = None
     try:
         embedder = get_embedder()
-        vector = embedder.embed([query], "query")[0]
+        vector = embed_query(embedder, vibe_text)
     except ImproperlyConfigured as error:
         logger.error("Search is misconfigured: %s", error)
-        return _unavailable()
+        mode = MODE_TEXT
     except EmbeddingRateLimited as error:
         logger.warning("Embedding provider is rate limiting: %s", error)
-        return _unavailable(error.retry_after)
+        mode = MODE_TEXT
     except EmbeddingError as error:
         logger.warning("Embedding failed during search (%s): %s", type(error).__name__, error)
-        return _unavailable()
+        mode = MODE_TEXT
 
-    hits = retrieve(
-        vector,
-        media_types=SEARCH_MEDIA_TYPES,
-        model=embedder.model,
-        dim=embedder.dimensions,
-        limit=settings.SEARCH_RESULT_LIMIT,
+    if mode == MODE_VIBE:
+        pools = retrieve_by_type(
+            vector,
+            media_types=media_types,
+            filters=filters,
+            model=embedder.model,
+            dim=embedder.dimensions,
+            limit=settings.SEARCH_CANDIDATES_PER_TYPE,
+        )
+    else:
+        pools = text_retrieve_by_type(
+            vibe_text,
+            media_types=media_types,
+            filters=filters,
+            limit=settings.SEARCH_CANDIDATES_PER_TYPE,
+        )
+    layout = build_layout(
+        pools,
+        hint=hint,
+        result_limit=settings.SEARCH_RESULT_LIMIT,
+        group_limit=settings.SEARCH_GROUP_LIMIT,
+        min_slots=settings.SEARCH_BLEND_MIN_SLOTS,
     )
+    notices = layout.notices if mode == MODE_VIBE else [TEXT_FALLBACK_NOTICE, *layout.notices]
+    body: dict[str, object] = {
+        "query": query,
+        "layout": layout.kind,
+        "mode": mode,
+        "notices": notices,
+    }
+    if layout.kind == GROUPED:
+        body["groups"] = [
+            {"media_type": media_type, "results": [_result(hit) for hit in hits]}
+            for media_type, hits in layout.groups
+        ]
+    else:
+        body["results"] = [_result(hit) for hit in layout.hits]
+    return Response(body)
+
+
+def _explanation_for(request: Request, item: Item) -> str | None:
+    """A short explanation of why `item` matches the search the visitor arrived from (SPEC
+    section 8), only when the request carries one (`?q=`): one small LLM call per item actually
+    opened, never during search itself. Any failure just means no explanation, never a broken
+    page. Failures are logged without the query text, same as search's own failures."""
+    query = normalize_query(request.query_params.get("q", ""))
+    if not query or len(query) > settings.SEARCH_MAX_QUERY_LENGTH:
+        return None
+    try:
+        return get_llm().explain_match(query, item.combined_text)
+    except ImproperlyConfigured as error:
+        logger.error("Item explanation is misconfigured (LLM): %s", error)
+    except LLMError as error:
+        logger.warning("Item explanation failed (%s): %s", type(error).__name__, error)
+    return None
+
+
+@api_view(["GET"])
+def item_detail(request: Request, item_id: int) -> Response:
+    item = get_object_or_404(Item, id=item_id)
+    body = build_item_detail(item)
+    explanation = _explanation_for(request, item)
+    if explanation is not None:
+        body["explanation"] = explanation
+    return Response(body)
+
+
+@api_view(["GET"])
+def item_similar(request: Request, item_id: int) -> Response:
+    item = get_object_or_404(Item, id=item_id)
+    hits = similar_items(item, limit=settings.ITEM_SIMILAR_LIMIT)
+    groups: dict[str, list[SearchHit]] = {}
+    for hit in hits:
+        groups.setdefault(hit.item.media_type, []).append(hit)
     return Response(
         {
-            "query": query,
-            "results": [
-                {
-                    "id": hit.item.id,
-                    "media_type": hit.item.media_type,
-                    "title": hit.item.title,
-                    "release_year": hit.item.release_year,
-                    "cover_url": hit.item.cover_url,
-                    "score": round(hit.score, 4),
-                }
-                for hit in hits
-            ],
+            "groups": [
+                {"media_type": media_type, "results": [_result(hit) for hit in groups[media_type]]}
+                for media_type in MediaType.values
+                if media_type in groups
+            ]
         }
     )

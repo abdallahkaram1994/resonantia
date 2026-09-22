@@ -45,3 +45,18 @@ def mid_tail_band_is_below_the_popularity_threshold(app_configs, **kwargs):
             )
         )
     return errors
+
+
+@checks.register()
+def candidate_pool_covers_what_is_shown(app_configs, **kwargs):
+    if settings.SEARCH_CANDIDATES_PER_TYPE < max(
+        settings.SEARCH_RESULT_LIMIT, settings.SEARCH_GROUP_LIMIT
+    ):
+        return [
+            checks.Error(
+                "SEARCH_CANDIDATES_PER_TYPE must be at least SEARCH_RESULT_LIMIT and "
+                "SEARCH_GROUP_LIMIT, otherwise results are cut short.",
+                id="catalog.E005",
+            )
+        ]
+    return []

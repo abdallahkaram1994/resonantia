@@ -1,0 +1,12 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [{"text": "{\"vibe_text\": \"a rainy night drive\", \"media_type_hint\": \"none\"}"}]
+      },
+      "finishReason": "STOP"
+    }
+  ],
+  "usageMetadata": {"promptTokenCount": 40, "candidatesTokenCount": 16}
+}

@@ -11,6 +11,7 @@ from catalog.embedding.base import (
     EmbeddingRequestError,
     EmbeddingUnavailable,
 )
+from catalog.llm.base import LLMUnavailable
 from catalog.models import EMBEDDING_DIMENSIONS, Item, MediaType
 from tests.factories import StaticEmbedder
 
@@ -18,6 +19,16 @@ pytestmark = pytest.mark.django_db
 
 MODEL = "test-model"
 GET_EMBEDDER = "catalog.views.get_embedder"
+GET_LLM = "catalog.views.get_llm"
+
+
+@pytest.fixture(autouse=True)
+def no_llm_parsing():
+    """Unless a test overrides this, query parsing is unavailable: vibe_text falls back to the
+    raw query and the hint stays None, exactly as search behaved before the LLM parse step
+    existed. Keeps every test below free to ignore parsing unless it is what it is testing."""
+    with mock.patch(GET_LLM, side_effect=ImproperlyConfigured("no LLM configured in tests")):
+        yield
 
 
 def vec(*head: float) -> list[float]:
@@ -51,10 +62,10 @@ def add_item(
     return item
 
 
-def search(client: Client, query: str, embedder: StaticEmbedder | None = None):
+def search(client: Client, query: str, embedder: StaticEmbedder | None = None, **params: str):
     embedder = embedder or StaticEmbedder(QUERY_VECTOR)
     with mock.patch(GET_EMBEDDER, return_value=embedder):
-        return client.get("/api/search/", {"q": query})
+        return client.get("/api/search/", {"q": query, **params})
 
 
 def titles(response) -> list[str]:
@@ -88,7 +99,13 @@ def test_an_empty_catalog_returns_an_empty_list(client: Client) -> None:
     response = search(client, "anything")
 
     assert response.status_code == 200
-    assert response.json() == {"query": "anything", "results": []}
+    assert response.json() == {
+        "query": "anything",
+        "layout": "blended",
+        "mode": "vibe",
+        "notices": [],
+        "results": [],
+    }
 
 
 def test_films_without_a_release_year_are_included(client: Client) -> None:
@@ -122,7 +139,7 @@ def test_a_closer_item_of_another_media_type_never_appears(client: Client) -> No
     add_item("The Game", vec(1.0), media_type=MediaType.GAME)
     add_item("The Album", vec(1.0), media_type=MediaType.ALBUM)
 
-    assert titles(search(client, "x")) == ["The Film"]
+    assert titles(search(client, "x", types="film")) == ["The Film"]
 
 
 def test_vectors_from_another_model_or_dimension_are_never_compared(client: Client) -> None:
@@ -173,7 +190,7 @@ def test_the_length_cap_applies_after_normalization(client: Client) -> None:
     assert padded.status_code == 200
     assert over.status_code == 400
     assert "200" in over.json()["detail"]
-    assert len(embedder.calls) == 2
+    assert len(embedder.calls) == 1  # the padded query normalizes to the same cached text
 
 
 def test_the_length_cap_is_configurable(client: Client) -> None:
@@ -223,34 +240,41 @@ def test_hostile_looking_queries_are_treated_as_plain_text(client: Client, hosti
         EmbeddingRateLimited("provider-detail: HTTP 429", retry_after=None, quota_exhausted=True),
     ],
 )
-def test_embedding_failures_become_a_generic_503(client: Client, error: Exception) -> None:
+def test_embedding_failures_fall_back_to_text_search_instead_of_failing(
+    client: Client, error: Exception
+) -> None:
+    add_item("Rainy Night", vec(1.0))
     embedder = StaticEmbedder(QUERY_VECTOR)
     embedder.embed = mock.Mock(side_effect=error)  # type: ignore[method-assign]
 
-    response = search(client, "x", embedder)
+    response = search(client, "rainy", embedder, types="film")
 
-    assert response.status_code == 503
+    assert response.status_code == 200
+    body = response.json()
     assert "provider-detail" not in response.content.decode()
-    assert "temporarily unavailable" in response.json()["detail"]
-    assert "Retry-After" not in response
+    assert body["mode"] == "text"
+    assert titles(response) == ["Rainy Night"]
+    assert any("text matches" in notice for notice in body["notices"])
 
 
-def test_a_rate_limited_provider_passes_on_a_retry_hint(client: Client) -> None:
+def test_a_rate_limited_provider_also_falls_back_to_text_search(client: Client) -> None:
     embedder = StaticEmbedder(QUERY_VECTOR)
     limited = EmbeddingRateLimited("limit", retry_after=29.2, quota_exhausted=False)
     embedder.embed = mock.Mock(side_effect=limited)  # type: ignore[method-assign]
 
     response = search(client, "x", embedder)
 
-    assert response.status_code == 503
-    assert response["Retry-After"] == "30"
+    assert response.status_code == 200
+    assert response.json()["mode"] == "text"
+    assert "Retry-After" not in response
 
 
-def test_a_missing_api_key_is_a_503_not_a_crash(client: Client) -> None:
+def test_a_missing_api_key_falls_back_to_text_search_not_a_crash(client: Client) -> None:
     with mock.patch(GET_EMBEDDER, side_effect=ImproperlyConfigured("GEMINI_API_KEY is not set")):
         response = client.get("/api/search/", {"q": "x"})
 
-    assert response.status_code == 503
+    assert response.status_code == 200
+    assert response.json()["mode"] == "text"
     assert "GEMINI_API_KEY" not in response.content.decode()
 
 
@@ -266,3 +290,465 @@ def test_failures_are_logged_without_the_query_text(
     assert "EmbeddingUnavailable" in caplog.text
     assert "provider is down" in caplog.text
     assert "private" not in caplog.text
+
+
+# --- media type toggles and the era filter --------------------------------------------------------
+
+
+def add_one_of_each(year: int | None = 2001) -> None:
+    add_item("The Film", vec(1.0), year=year)
+    add_item("The Game", vec(1.0), media_type=MediaType.GAME, year=year)
+    add_item("The Album", vec(1.0), media_type=MediaType.ALBUM, year=year)
+
+
+def test_the_default_types_are_films_and_games_not_albums(client: Client) -> None:
+    # Albums are left out of the default: a small number of them sit disproportionately close to
+    # many unrelated queries in the shared embedding space ("hubness"), confirmed on the real
+    # catalog, and crowd out legitimate album matches. Still fully searchable with types=album.
+    add_one_of_each()
+
+    assert set(titles(search(client, "x"))) == {"The Film", "The Game"}
+
+
+@pytest.mark.parametrize(
+    ("types", "expected"),
+    [
+        ("game", {"The Game"}),
+        ("album", {"The Album"}),
+        ("film,game", {"The Film", "The Game"}),
+        ("album,game,film", {"The Film", "The Game", "The Album"}),
+    ],
+)
+def test_the_types_parameter_chooses_which_types_are_searched(
+    client: Client, types: str, expected: set[str]
+) -> None:
+    add_one_of_each()
+
+    assert set(titles(search(client, "x", types=types))) == expected
+
+
+def test_a_type_that_is_switched_off_never_appears_however_close(client: Client) -> None:
+    add_item("Far film", vec(1.0, 9.0))
+    add_item("Exact game", vec(1.0), media_type=MediaType.GAME)
+
+    assert titles(search(client, "x", types="film")) == ["Far film"]
+
+
+@pytest.mark.parametrize("types", ["", "book", "film,book", " , "])
+def test_bad_types_are_a_400_that_costs_no_embedding_request(client: Client, types: str) -> None:
+    embedder = StaticEmbedder(QUERY_VECTOR)
+
+    response = search(client, "x", embedder, types=types)
+
+    assert response.status_code == 400
+    assert "media type" in response.json()["detail"].lower()
+    assert embedder.calls == []
+
+
+@pytest.mark.parametrize("eras", ["1990", "1999-1990", "1980-1989,", "x" * 500])
+def test_bad_eras_are_a_400_that_costs_no_embedding_request(client: Client, eras: str) -> None:
+    embedder = StaticEmbedder(QUERY_VECTOR)
+
+    response = search(client, "x", embedder, eras=eras)
+
+    assert response.status_code == 400
+    assert "era" in response.json()["detail"].lower()
+    assert embedder.calls == []
+
+
+def test_a_blank_query_is_reported_before_a_bad_filter(client: Client) -> None:
+    response = search(client, "  ", eras="nope")
+
+    assert response.status_code == 400
+    assert "'q'" in response.json()["detail"]
+
+
+def test_an_era_keeps_only_items_released_in_it(client: Client) -> None:
+    for year in (1979, 1980, 1989, 1990):
+        add_item(f"Film {year}", vec(1.0), year=year)
+
+    assert set(titles(search(client, "x", eras="1980-1989"))) == {"Film 1980", "Film 1989"}
+
+
+def test_several_eras_match_items_in_any_of_them(client: Client) -> None:
+    for year in (1975, 1985, 1995, 2005):
+        add_item(f"Film {year}", vec(1.0), year=year)
+
+    found = titles(search(client, "x", eras="1980-1989,2000-2009"))
+
+    assert set(found) == {"Film 1985", "Film 2005"}
+
+
+def test_items_without_a_year_stay_unless_an_era_is_chosen(client: Client) -> None:
+    add_item("Undated", vec(1.0), year=None)
+    add_item("Dated", vec(1.0, 1.0), year=1985)
+
+    assert titles(search(client, "x")) == ["Undated", "Dated"]
+    assert titles(search(client, "x", eras="1980-1989")) == ["Dated"]
+
+
+def test_an_empty_eras_parameter_means_no_era_filter(client: Client) -> None:
+    add_item("Undated", vec(1.0), year=None)
+
+    assert titles(search(client, "x", eras="")) == ["Undated"]
+
+
+def test_an_era_narrows_every_chosen_type_and_only_the_chosen_types(client: Client) -> None:
+    for media_type in (MediaType.FILM, MediaType.GAME, MediaType.ALBUM):
+        add_item(f"Old {media_type}", vec(1.0), media_type=media_type, year=1975)
+        add_item(f"New {media_type}", vec(1.0), media_type=media_type, year=1985)
+        add_item(f"Undated {media_type}", vec(1.0), media_type=media_type, year=None)
+
+    found = titles(search(client, "x", types="film,game", eras="1980-1989"))
+
+    assert set(found) == {"New film", "New game"}
+
+
+def test_filters_leave_the_query_embedding_alone(client: Client) -> None:
+    embedder = StaticEmbedder(QUERY_VECTOR)
+
+    search(client, "Rainy Night", embedder, types="game", eras="1980-1989")
+
+    assert embedder.calls == [(["rainy night"], "query")]
+
+
+# --- layout ---------------------------------------------------------------------------------------
+
+
+def test_one_chosen_type_is_a_single_list(client: Client) -> None:
+    add_one_of_each()
+
+    body = search(client, "x", types="game").json()
+
+    assert body["layout"] == "single"
+    assert body["mode"] == "vibe"
+    assert body["notices"] == []
+    assert [r["title"] for r in body["results"]] == ["The Game"]
+    assert "groups" not in body
+
+
+def test_several_types_without_a_named_type_are_blended(client: Client) -> None:
+    add_one_of_each()
+
+    body = search(client, "x", types="film,game,album").json()
+
+    assert body["layout"] == "blended"
+    assert {r["media_type"] for r in body["results"]} == {"film", "game", "album"}
+    assert "groups" not in body
+
+
+def test_a_blended_list_keeps_every_type_even_when_one_type_scores_far_higher(
+    client: Client,
+) -> None:
+    for i in range(20):
+        add_item(f"Film {i:02d}", vec(1.0, i * 0.001))  # very close to the query
+    for i in range(4):
+        add_item(f"Game {i}", vec(1.0, 1.0 + i), media_type=MediaType.GAME)  # much further away
+        add_item(f"Album {i}", vec(1.0, 2.0 + i), media_type=MediaType.ALBUM)
+
+    body = search(client, "x", types="film,game,album").json()
+
+    kinds = [r["media_type"] for r in body["results"]]
+    assert len(kinds) == 15
+    assert kinds.count("game") >= 2
+    assert kinds.count("album") >= 2
+
+
+def test_a_standout_match_beats_higher_raw_scores_from_a_type_that_is_close_to_everything(
+    client: Client,
+) -> None:
+    import math
+
+    def at(degrees: float) -> list[float]:
+        radians = math.radians(degrees)
+        return vec(math.cos(radians), math.sin(radians))
+
+    for i in range(20):  # every film is fairly close to the query, so none stands out much
+        add_item(f"Film {i:02d}", at(10 + i * 0.5))
+    add_item("Standout album", at(35), media_type=MediaType.ALBUM)  # raw 0.82: below every film
+    for i in range(20):  # the other albums are far away
+        add_item(f"Album {i:02d}", at(80 + i * 0.4), media_type=MediaType.ALBUM)
+
+    body = search(client, "x", types="film,game,album").json()
+
+    assert body["results"][0]["title"] == "Standout album"
+    raw = {r["title"]: r["score"] for r in body["results"]}
+    assert raw["Standout album"] < min(v for t, v in raw.items() if t.startswith("Film"))
+
+
+def test_the_blend_reserve_and_sizes_are_configurable(client: Client) -> None:
+    for i in range(10):
+        add_item(f"Film {i}", vec(1.0, i * 0.001))
+        add_item(f"Game {i}", vec(1.0, 3.0 + i), media_type=MediaType.GAME)
+
+    with override_settings(SEARCH_RESULT_LIMIT=8, SEARCH_BLEND_MIN_SLOTS=4):
+        kinds = [r["media_type"] for r in search(client, "x").json()["results"]]
+
+    assert len(kinds) == 8
+    assert kinds.count("game") >= 4
+    with override_settings(SEARCH_CANDIDATES_PER_TYPE=50, SEARCH_RESULT_LIMIT=3):
+        assert len(search(client, "x", types="film").json()["results"]) == 3
+
+
+def test_a_blended_list_applies_each_types_filters_within_its_own_pool(client: Client) -> None:
+    for media_type in (MediaType.FILM, MediaType.GAME, MediaType.ALBUM):
+        add_item(f"Old {media_type}", vec(1.0), media_type=media_type, year=1975)
+        add_item(f"New {media_type}", vec(1.0, 1.0), media_type=media_type, year=1985)
+        add_item(f"Undated {media_type}", vec(1.0), media_type=media_type, year=None)
+
+    body = search(client, "x", types="film,game,album", eras="1980-1989").json()
+
+    assert {r["title"] for r in body["results"]} == {"New film", "New game", "New album"}
+
+
+def test_the_layout_only_ever_sees_the_candidate_pool(client: Client) -> None:
+    for i in range(20):
+        add_item(f"Film {i:02d}", vec(1.0, i * 0.01))
+
+    # The startup check refuses a pool smaller than the lists, so this shows why it matters.
+    with override_settings(SEARCH_CANDIDATES_PER_TYPE=5, SEARCH_RESULT_LIMIT=15):
+        results = search(client, "x", types="film").json()["results"]
+
+    assert [r["title"] for r in results] == [f"Film {i:02d}" for i in range(5)]
+
+
+def test_the_result_keeps_its_display_fields_in_every_layout(client: Client) -> None:
+    add_one_of_each()
+    fields = {"id", "media_type", "title", "release_year", "cover_url", "score"}
+
+    for params in ({"types": "film"}, {}):
+        body = search(client, "x", **params).json()
+        assert set(body["results"][0]) == fields
+
+
+def named(media_type: str):
+    """Make the layout see a query that names `media_type`, as the LLM parse will in M5."""
+    from catalog.layout import build_layout
+
+    def with_hint(pools, **kwargs):
+        return build_layout(pools, **{**kwargs, "hint": media_type})
+
+    return mock.patch("catalog.views.build_layout", side_effect=with_hint)
+
+
+def test_a_query_that_names_a_type_is_grouped_with_that_type_first(client: Client) -> None:
+    add_one_of_each()
+
+    with named("album"):
+        body = search(client, "x", types="film,game,album").json()
+
+    assert body["layout"] == "grouped"
+    assert "results" not in body
+    assert [g["media_type"] for g in body["groups"]] == ["album", "film", "game"]
+    assert [[r["title"] for r in g["results"]] for g in body["groups"]] == [
+        ["The Album"],
+        ["The Film"],
+        ["The Game"],
+    ]
+
+
+def test_a_group_with_no_matches_is_still_listed(client: Client) -> None:
+    add_item("The Film", vec(1.0))
+
+    with named("game"):
+        body = search(client, "x", types="film,game").json()
+
+    assert [(g["media_type"], len(g["results"])) for g in body["groups"]] == [
+        ("game", 0),
+        ("film", 1),
+    ]
+
+
+def test_groups_hold_at_most_the_group_limit(client: Client) -> None:
+    for i in range(6):
+        add_item(f"Film {i}", vec(1.0, i * 0.01))
+        add_item(f"Game {i}", vec(1.0, i * 0.01), media_type=MediaType.GAME)
+
+    with named("film"), override_settings(SEARCH_GROUP_LIMIT=4):
+        body = search(client, "x", types="film,game").json()
+
+    assert [len(g["results"]) for g in body["groups"]] == [4, 4]
+
+
+def test_the_toggle_wins_over_a_named_type_with_a_notice(client: Client) -> None:
+    add_one_of_each()
+
+    with named("game"):
+        body = search(client, "x", types="film,album").json()
+
+    assert body["layout"] == "blended"
+    assert body["notices"] == ["Your search mentions games, but games are switched off."]
+    assert {r["media_type"] for r in body["results"]} == {"film", "album"}
+
+
+def test_grouped_layout_is_unreachable_while_parsing_is_unavailable(client: Client) -> None:
+    # The autouse fixture above makes get_llm unavailable for every test in this file unless a
+    # test overrides it, so no hint ever reaches build_layout here, whatever the query says.
+    add_one_of_each()
+
+    for query in ("a video game about films", "the best album", "games"):
+        body = search(client, query, types="film,game,album").json()
+        assert body["layout"] == "blended"
+        assert "groups" not in body
+
+
+# --- the LLM parse step, wired into search (M5) --------------------------------------------
+
+
+def parses_to(vibe_text: str, hint: str | None):
+    from catalog.llm.base import ParsedQuery
+
+    llm = mock.Mock()
+    llm.parse_query.return_value = ParsedQuery(vibe_text=vibe_text, media_type_hint=hint)
+    return mock.patch(GET_LLM, return_value=llm)
+
+
+def test_a_real_parsed_hint_reaches_the_layout_as_grouped(client: Client) -> None:
+    add_one_of_each()
+
+    with parses_to("x", "album"):
+        body = search(client, "an album like x", types="film,game,album").json()
+
+    assert body["layout"] == "grouped"
+    assert [g["media_type"] for g in body["groups"]] == ["album", "film", "game"]
+
+
+def test_a_hint_for_a_switched_off_type_still_shows_the_toggle_wins_notice(
+    client: Client,
+) -> None:
+    add_one_of_each()
+
+    with parses_to("x", "game"):
+        body = search(client, "a game like x", types="film,album").json()
+
+    assert body["layout"] == "blended"
+    assert any("switched off" in n for n in body["notices"])
+
+
+def test_a_successful_parse_embeds_the_vibe_text_not_the_raw_query(client: Client) -> None:
+    add_item("Exact", vec(1.0))
+    embedder = StaticEmbedder(QUERY_VECTOR)
+
+    with parses_to("cleaned up vibe", None):
+        search(client, "please find me a film about cleaned up vibe", embedder)
+
+    assert embedder.calls == [(["cleaned up vibe"], "query")]
+
+
+def test_the_response_still_echoes_back_the_visitors_own_raw_query(client: Client) -> None:
+    with parses_to("cleaned up vibe", "film"):
+        body = search(client, "  Please Find Me A Film  ", types="film").json()
+
+    assert body["query"] == "please find me a film"
+
+
+def test_a_parse_failure_falls_back_to_the_raw_query_with_no_hint_and_no_notice(
+    client: Client,
+) -> None:
+    add_one_of_each()
+    llm = mock.Mock()
+    llm.parse_query.side_effect = LLMUnavailable("down")
+
+    with mock.patch(GET_LLM, return_value=llm):
+        body = search(client, "x", types="film,game,album").json()
+
+    assert body["layout"] == "blended"  # never grouped: no hint survived the failure
+    assert body["notices"] == []  # unlike an embedding failure, this is silent
+
+
+def test_the_full_text_fallback_also_searches_on_the_parsed_vibe_text(client: Client) -> None:
+    # The raw query and the vibe text share no words, so only whichever one full-text search
+    # actually uses will find a match: this distinguishes the two, unlike overlapping phrasing.
+    add_item("Xylophone Marmalade", vec(1.0))  # matches only the parsed vibe text
+    add_item("Please Help Me Search", vec(1.0, 1.0))  # matches only the raw query's own words
+    embedder = StaticEmbedder(QUERY_VECTOR)
+    embedder.embed = mock.Mock(side_effect=EmbeddingUnavailable("down"))  # type: ignore[method-assign]
+
+    with parses_to("xylophone marmalade", None):
+        body = search(client, "please help me search", embedder).json()
+
+    assert body["mode"] == "text"
+    assert [r["title"] for r in body["results"]] == ["Xylophone Marmalade"]
+
+
+def test_llm_misconfiguration_is_treated_like_any_other_parse_failure(client: Client) -> None:
+    add_one_of_each()
+
+    with mock.patch(GET_LLM, side_effect=ImproperlyConfigured("GEMINI_API_KEY is not set")):
+        response = search(client, "x", types="film,game,album")
+
+    assert response.status_code == 200
+    assert response.json()["layout"] == "blended"
+
+
+# --- full-text fallback: end to end -------------------------------------------------------------
+
+
+def down(client: Client, query: str, **params: str):
+    embedder = StaticEmbedder(QUERY_VECTOR)
+    embedder.embed = mock.Mock(side_effect=EmbeddingUnavailable("down"))  # type: ignore[method-assign]
+    return search(client, query, embedder, **params)
+
+
+def test_fallback_still_isolates_media_types(client: Client) -> None:
+    add_item("Rainy Film", vec(1.0))
+    add_item("Rainy Game", vec(1.0), media_type=MediaType.GAME)
+
+    body = down(client, "rainy", types="film").json()
+
+    assert body["mode"] == "text"
+    assert titles_body(body) == ["Rainy Film"]
+
+
+def test_fallback_still_applies_the_era_filter(client: Client) -> None:
+    add_item("Rainy Old", vec(1.0), year=1975)
+    add_item("Rainy New", vec(1.0, 1.0), year=1985)
+
+    body = down(client, "rainy", eras="1980-1989").json()
+
+    assert titles_body(body) == ["Rainy New"]
+
+
+def test_a_single_enabled_type_is_a_single_list_in_text_mode_too(client: Client) -> None:
+    add_item("Rainy Film", vec(1.0))
+
+    body = down(client, "rainy", types="film").json()
+
+    assert body["layout"] == "single"
+    assert body["mode"] == "text"
+
+
+def test_several_types_blend_in_text_mode_too(client: Client) -> None:
+    add_item("Rainy Film", vec(1.0))
+    add_item("Rainy Game", vec(1.0), media_type=MediaType.GAME)
+
+    body = down(client, "rainy").json()
+
+    assert body["layout"] == "blended"
+    assert {r["media_type"] for r in body["results"]} == {"film", "game"}
+
+
+def test_a_query_with_no_usable_words_is_an_empty_result_not_an_error(client: Client) -> None:
+    add_item("Rainy Film", vec(1.0))
+
+    body = down(client, "🌧️🌧️🌧️").json()
+
+    assert body["mode"] == "text"
+    assert titles_body(body) == []
+
+
+def test_the_fallback_notice_comes_before_a_layout_notice(client: Client) -> None:
+    add_item("Rainy Film", vec(1.0))
+    add_item("Rainy Album", vec(1.0), media_type=MediaType.ALBUM)
+
+    with named("game"):
+        body = down(client, "rainy", types="film,album").json()
+
+    assert "text matches" in body["notices"][0]
+    assert "games" in body["notices"][1]
+
+
+def titles_body(body: dict) -> list[str]:
+    if "results" in body:
+        return [r["title"] for r in body["results"]]
+    return [r["title"] for g in body["groups"] for r in g["results"]]

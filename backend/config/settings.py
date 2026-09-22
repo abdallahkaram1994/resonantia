@@ -57,6 +57,9 @@ ALLOWED_HOSTS = [
 INSTALLED_APPS = [
     # Procrastinate (the Postgres-backed task queue) must come before the apps that define tasks.
     "procrastinate.contrib.django",
+    # Ships with Django; used for the Postgres full-text fallback search (SPEC section 7.5), not a
+    # new dependency.
+    "django.contrib.postgres",
     "rest_framework",
     "core",
     "catalog",
@@ -98,6 +101,13 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "").strip() or "gemini-embed
 EMBEDDING_DIM = env_int("EMBEDDING_DIM", 768)
 EMBEDDING_REQUESTS_PER_MINUTE = env_int("EMBEDDING_REQUESTS_PER_MINUTE", 60)
 
+# The LLM (query parsing, section 7.1 step 3; per-item explanations, section 8). Same key and
+# project as the embeddings above, a separate model and quota. Verified live (Sept 2026):
+# gemini-2.5-flash-lite is no longer available to new users; the API itself names this one as its
+# replacement. Free-tier RPM/TPM/RPD are still account-specific — check your own AI Studio.
+GEMINI_LLM_MODEL = os.environ.get("GEMINI_LLM_MODEL", "").strip() or "gemini-3.5-flash-lite"
+LLM_REQUESTS_PER_MINUTE = env_int("LLM_REQUESTS_PER_MINUTE", 10)
+
 # Game catalog (IGDB, through a Twitch app's client credentials). Free for non-commercial use.
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID", "").strip()
 TWITCH_CLIENT_SECRET = os.environ.get("TWITCH_CLIENT_SECRET", "").strip()
@@ -136,8 +146,19 @@ WIKIMEDIA_REQUESTS_PER_SECOND = env_int("WIKIMEDIA_REQUESTS_PER_SECOND", 1)
 COVERART_REQUESTS_PER_SECOND = env_int("COVERART_REQUESTS_PER_SECOND", 4)
 
 # Search. Queries longer than the cap are rejected, not truncated, so their meaning never changes.
-SEARCH_RESULT_LIMIT = env_int("SEARCH_RESULT_LIMIT", 15)
 SEARCH_MAX_QUERY_LENGTH = env_int("SEARCH_MAX_QUERY_LENGTH", 200)
+# Results in a single-type list and in a blended list; and per type when results are grouped.
+SEARCH_RESULT_LIMIT = env_int("SEARCH_RESULT_LIMIT", 15)
+SEARCH_GROUP_LIMIT = env_int("SEARCH_GROUP_LIMIT", 10)
+# Candidates fetched per media type before the layout picks what to show.
+SEARCH_CANDIDATES_PER_TYPE = env_int("SEARCH_CANDIDATES_PER_TYPE", 50)
+# In a blended list, the slots every media type with matches is guaranteed (0 turns this off).
+SEARCH_BLEND_MIN_SLOTS = env_int("SEARCH_BLEND_MIN_SLOTS", 2, minimum=0)
+
+# --- Item detail page ---
+# Total items returned by "more like this": one pgvector query across every media type, then
+# grouped for display.
+ITEM_SIMILAR_LIMIT = env_int("ITEM_SIMILAR_LIMIT", 10)
 
 # Film catalog (TMDB). Non-commercial use only; TMDB data must be refreshed within 6 months.
 TMDB_READ_ACCESS_TOKEN = os.environ.get("TMDB_READ_ACCESS_TOKEN", "").strip()
