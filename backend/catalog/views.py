@@ -148,10 +148,31 @@ def search(request: Request) -> Response:
     return Response(body)
 
 
+def _explanation_for(request: Request, item: Item) -> str | None:
+    """A short explanation of why `item` matches the search the visitor arrived from (SPEC
+    section 8), only when the request carries one (`?q=`): one small LLM call per item actually
+    opened, never during search itself. Any failure just means no explanation, never a broken
+    page. Failures are logged without the query text, same as search's own failures."""
+    query = normalize_query(request.query_params.get("q", ""))
+    if not query or len(query) > settings.SEARCH_MAX_QUERY_LENGTH:
+        return None
+    try:
+        return get_llm().explain_match(query, item.combined_text)
+    except ImproperlyConfigured as error:
+        logger.error("Item explanation is misconfigured (LLM): %s", error)
+    except LLMError as error:
+        logger.warning("Item explanation failed (%s): %s", type(error).__name__, error)
+    return None
+
+
 @api_view(["GET"])
 def item_detail(request: Request, item_id: int) -> Response:
     item = get_object_or_404(Item, id=item_id)
-    return Response(build_item_detail(item))
+    body = build_item_detail(item)
+    explanation = _explanation_for(request, item)
+    if explanation is not None:
+        body["explanation"] = explanation
+    return Response(body)
 
 
 @api_view(["GET"])

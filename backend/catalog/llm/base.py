@@ -39,3 +39,11 @@ class LLM(Protocol):
         hint (SPEC section 7.5), so this never needs to be retried by hand.
         """
         ...
+
+    def explain_match(self, query: str, item_text: str) -> str:
+        """One short sentence explaining why an item matches a search, grounded only in
+        `item_text` (the item's own stored metadata, never other candidates). `query` is the
+        visitor's own, untrusted, raw text. Raises LLMError subclasses on failure; the caller
+        just shows the item with no explanation (SPEC section 8), never fails the page.
+        """
+        ...

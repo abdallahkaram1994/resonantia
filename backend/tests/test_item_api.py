@@ -1,11 +1,16 @@
 """GET /api/items/<id>/ and GET /api/items/<id>/similar/ (SPEC section 8)."""
 
 from datetime import UTC, datetime
+from unittest import mock
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.test import Client, override_settings
 
+from catalog.llm.base import LLMUnavailable
 from catalog.models import EMBEDDING_DIMENSIONS, Item, MediaType, Score
+
+GET_LLM = "catalog.views.get_llm"
 
 pytestmark = pytest.mark.django_db
 
@@ -82,6 +87,110 @@ def test_the_detail_endpoint_only_allows_get(client: Client, method: str) -> Non
     item = add("The Film")
 
     assert getattr(client, method)(f"/api/items/{item.id}/").status_code == 405
+
+
+# --- per-item explanations (?q=, lazy: SPEC section 8) --------------------------------------
+
+
+def llm_that_explains(text: str):
+    llm = mock.Mock()
+    llm.explain_match.return_value = text
+    return mock.patch(GET_LLM, return_value=llm)
+
+
+def test_an_explanation_is_included_when_the_request_carries_a_query(client: Client) -> None:
+    item = add("The Film")
+
+    with llm_that_explains("Both are about a rainy night drive.") as get_llm:
+        body = client.get(f"/api/items/{item.id}/", {"q": "a rainy night drive"}).json()
+
+    assert body["explanation"] == "Both are about a rainy night drive."
+    get_llm.return_value.explain_match.assert_called_once_with(
+        "a rainy night drive", item.combined_text
+    )
+
+
+def test_no_explanation_key_at_all_without_a_query(client: Client) -> None:
+    item = add("The Film")
+
+    with llm_that_explains("should never be used") as get_llm:
+        body = client.get(f"/api/items/{item.id}/").json()
+
+    assert "explanation" not in body
+    get_llm.return_value.explain_match.assert_not_called()
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+def test_a_blank_query_gets_no_explanation_either(client: Client, blank: str) -> None:
+    item = add("The Film")
+
+    with llm_that_explains("should never be used") as get_llm:
+        body = client.get(f"/api/items/{item.id}/", {"q": blank}).json()
+
+    assert "explanation" not in body
+    get_llm.return_value.explain_match.assert_not_called()
+
+
+def test_the_query_is_normalized_before_being_sent_to_the_llm(client: Client) -> None:
+    item = add("The Film")
+
+    with llm_that_explains("x") as get_llm:
+        client.get(f"/api/items/{item.id}/", {"q": "  A  Rainy\tNIGHT\n Drive  "})
+
+    get_llm.return_value.explain_match.assert_called_once_with(
+        "a rainy night drive", item.combined_text
+    )
+
+
+def test_an_over_long_query_gets_no_explanation_rather_than_failing_the_page(
+    client: Client,
+) -> None:
+    item = add("The Film")
+
+    with llm_that_explains("should never be used") as get_llm:
+        response = client.get(f"/api/items/{item.id}/", {"q": "a" * 300})
+
+    assert response.status_code == 200
+    assert "explanation" not in response.json()
+    get_llm.return_value.explain_match.assert_not_called()
+
+
+def test_a_failed_explanation_still_shows_the_rest_of_the_page(client: Client) -> None:
+    item = add("The Film")
+    llm = mock.Mock()
+    llm.explain_match.side_effect = LLMUnavailable("down")
+
+    with mock.patch(GET_LLM, return_value=llm):
+        response = client.get(f"/api/items/{item.id}/", {"q": "a rainy night drive"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "The Film"
+    assert "explanation" not in body
+
+
+def test_a_misconfigured_llm_still_shows_the_rest_of_the_page(client: Client) -> None:
+    item = add("The Film")
+
+    with mock.patch(GET_LLM, side_effect=ImproperlyConfigured("no key")):
+        response = client.get(f"/api/items/{item.id}/", {"q": "a rainy night drive"})
+
+    assert response.status_code == 200
+    assert "explanation" not in response.json()
+
+
+def test_the_explanation_is_grounded_in_the_items_own_stored_text_not_similar_items(
+    client: Client,
+) -> None:
+    item = add(
+        "The Film", details={"genres": ["Drama"], "keywords": [], "tagline": "", "runtime": None}
+    )
+
+    with llm_that_explains("x") as get_llm:
+        client.get(f"/api/items/{item.id}/", {"q": "a rainy night drive"})
+
+    passed_item_text = get_llm.return_value.explain_match.call_args.args[1]
+    assert passed_item_text == item.combined_text
 
 
 # --- more like this --------------------------------------------------------------------------
